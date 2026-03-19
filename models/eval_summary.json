@@ -1,0 +1,9 @@
+{
+  "anomaly_precision": 1.0,
+  "anomaly_recall": 0.4864864864864865,
+  "anomaly_f1": 0.6545454545454547,
+  "fault_accuracy": 1.0,
+  "fault_macro_f1": 1.0,
+  "root_cause_accuracy": 1.0,
+  "root_cause_macro_f1": 1.0
+}
