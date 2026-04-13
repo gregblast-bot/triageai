@@ -47,6 +47,12 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+Convert RCAEval data into digestible file format:
+
+```bash
+python3 -m src.data_converter
+```
+
 Generate starter data and train baseline models:
 
 ```bash
