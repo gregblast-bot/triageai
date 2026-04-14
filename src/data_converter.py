@@ -8,7 +8,8 @@ from pathlib import Path
 import pandas as pd
 
 
-FILE_MAP = {"RE1-OB": "data.csv", "RE1-SS": "simple_data.csv", "RE1-TT": "simple_data.csv"}
+FILE_MAP = {"RE1-OB": "data.csv", "RE1-SS": "simple_data.csv", "RE1-TT": "simple_data.csv",
+            "RE2-OB": "simple_metrics.csv", "RE2-SS": "simple_metrics.csv", "RE2-TT": "simple_metrics.csv"}
 WINDOW_SIZE = 120
 PRE_FAULT_CONTEXT = 30
 NORMAL_WINDOW_GAP = 60

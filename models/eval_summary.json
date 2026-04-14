@@ -1,50 +1,50 @@
 {
-  "anomaly_precision": 0.6785714285714286,
-  "anomaly_recall": 0.5507246376811594,
-  "anomaly_f1": 0.608,
-  "fault_accuracy": 0.9202898550724637,
-  "fault_macro_f1": 0.9184791174152876,
-  "root_cause_accuracy": 0.7971014492753623,
-  "root_cause_macro_f1": 0.6378645016683095,
+  "anomaly_precision": 0.6868686868686869,
+  "anomaly_recall": 0.5230769230769231,
+  "anomaly_f1": 0.5938864628820961,
+  "fault_accuracy": 0.9038461538461539,
+  "fault_macro_f1": 0.8606180746842564,
+  "root_cause_accuracy": 0.7346153846153847,
+  "root_cause_macro_f1": 0.5560188132084607,
   "selected_models": {
     "fault_type": "random_forest_balanced_subsample",
-    "root_cause_service": "random_forest_balanced_subsample"
+    "root_cause_service": "random_forest_balanced"
   },
   "comparisons": {
     "fault_type": {
       "random_forest": {
-        "accuracy": 0.9130434782608695,
-        "macro_f1": 0.9052516041877743
+        "accuracy": 0.9,
+        "macro_f1": 0.850858682435328
       },
       "random_forest_balanced": {
-        "accuracy": 0.9057971014492754,
-        "macro_f1": 0.8909819232514268
+        "accuracy": 0.8961538461538462,
+        "macro_f1": 0.8387707901010951
       },
       "random_forest_balanced_subsample": {
-        "accuracy": 0.9202898550724637,
-        "macro_f1": 0.9184791174152876
+        "accuracy": 0.9038461538461539,
+        "macro_f1": 0.8606180746842564
       },
       "logistic_regression": {
-        "accuracy": 0.8115942028985508,
-        "macro_f1": 0.7576189736133093
+        "accuracy": 0.7576923076923077,
+        "macro_f1": 0.6406793399338019
       }
     },
     "root_cause_service": {
       "random_forest": {
-        "accuracy": 0.7898550724637681,
-        "macro_f1": 0.5987030928841274
+        "accuracy": 0.7538461538461538,
+        "macro_f1": 0.5473734892809223
       },
       "random_forest_balanced": {
-        "accuracy": 0.7898550724637681,
-        "macro_f1": 0.637411963036963
+        "accuracy": 0.7346153846153847,
+        "macro_f1": 0.5560188132084607
       },
       "random_forest_balanced_subsample": {
-        "accuracy": 0.7971014492753623,
-        "macro_f1": 0.6378645016683095
+        "accuracy": 0.7230769230769231,
+        "macro_f1": 0.5274798470636699
       },
       "logistic_regression": {
-        "accuracy": 0.6014492753623188,
-        "macro_f1": 0.38918841575091573
+        "accuracy": 0.5576923076923077,
+        "macro_f1": 0.26561772807182843
       }
     }
   }
