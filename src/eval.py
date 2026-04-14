@@ -25,7 +25,12 @@ def _score_predictions(y_true, y_pred) -> dict:
 
 def _evaluate_classifier_family(train_df, test_df, numeric_columns, target_column: str) -> dict:
     results = {}
-    for classifier_name in ("random_forest", "logistic_regression"):
+    for classifier_name in (
+        "random_forest",
+        "random_forest_balanced",
+        "random_forest_balanced_subsample",
+        "logistic_regression",
+    ):
         model = build_classifier_pipeline(numeric_columns, classifier_name)
         model.fit(train_df[numeric_columns + ["text"]], train_df[target_column])
         predictions = model.predict(test_df[numeric_columns + ["text"]])
