@@ -49,6 +49,7 @@ def build_feature_frame(
             "fault_type": base["fault_type"],
             "root_cause_service": base["root_cause_service"],
             "is_anomalous": bool(base["is_anomalous"]),
+            "data_split": base["data_split"],
         }
         for column in METRIC_COLUMNS:
             row.update(_summarize_metric(group[column], column))

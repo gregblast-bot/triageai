@@ -60,6 +60,13 @@ def train_all_models() -> dict:
     feature_frame = build_feature_frame(incidents, metrics)
     numeric_columns = get_numeric_feature_columns(feature_frame)
 
+    # Filter so the model never sees the test incidents during training.
+    feature_frame = feature_frame[feature_frame["data_split"] == "Train"]
+
+    # Remove data_split from features if it's there.
+    if "data_split" in numeric_columns:
+        numeric_columns.remove("data_split")
+    
     anomaly_model = IsolationForest(
         n_estimators=250,
         contamination=_get_contamination_rate(feature_frame["is_anomalous"].mean()),
