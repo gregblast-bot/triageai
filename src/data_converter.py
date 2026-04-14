@@ -1,5 +1,6 @@
 import pandas as pd
 import os
+import numpy as np
 from pathlib import Path
 
 def convert_data(root_path="data/raw", output_dir="data/processed"):
@@ -108,8 +109,16 @@ def convert_data(root_path="data/raw", output_dir="data/processed"):
                 
                 incident_counter += 1
 
+    # Create a dataframe to hold all incidents.
+    df_incidents = pd.DataFrame(all_incidents)
+    
+    # Assign splits, 80% train and 20% test.
+    np.random.seed(42) 
+    mask = np.random.rand(len(df_incidents)) < 0.8
+    df_incidents['data_split'] = np.where(mask, 'Train', 'Test')
+
     # Save outputs.
-    pd.DataFrame(all_incidents).to_csv(f"{output_dir}/incidents.csv", index=False)
+    df_incidents.to_csv(f"{output_dir}/incidents.csv", index=False)
     pd.DataFrame(all_metrics).to_csv(f"{output_dir}/metrics.csv", index=False)
     print(f"\nFinished! Compiled {incident_counter - 1} specific fault incidents.")
 

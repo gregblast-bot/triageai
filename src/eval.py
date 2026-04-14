@@ -39,12 +39,13 @@ def evaluate_models() -> dict:
     feature_frame = build_feature_frame(load_incidents(), load_metrics())
     numeric_columns = get_numeric_feature_columns(feature_frame)
 
-    train_df, test_df = train_test_split(
-        feature_frame,
-        test_size=0.25,
-        random_state=42,
-        stratify=feature_frame["fault_type"],
-    )
+    # Now we want to use the datasplit that was defined during data conversion to maintain consistency.
+    train_df = feature_frame[feature_frame["data_split"] == "Train"].copy()
+    test_df = feature_frame[feature_frame["data_split"] == "Test"].copy()
+
+    # Remove data_split from features if it's there.
+    if "data_split" in numeric_columns:
+        numeric_columns.remove("data_split")
 
     anomaly_model = IsolationForest(
         n_estimators=250,

@@ -44,7 +44,7 @@ def render_training_panel():
 
 def render_incident_selector(incidents):
     incident_label_map = {
-        row.incident_id: f"{row.incident_id} | {row.title}"
+        row.incident_id: f"{row.incident_id} [{row.data_split}] - {row.title}"
         for row in incidents.itertuples(index=False)
     }
     selected = st.sidebar.selectbox(
@@ -53,7 +53,6 @@ def render_incident_selector(incidents):
         format_func=lambda incident_id: incident_label_map[incident_id],
     )
     return selected
-
 
 def render_incident_overview(incident):
     col1, col2, col3 = st.columns(3)
