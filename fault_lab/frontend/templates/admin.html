@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block title %}Fault Lab Admin{% endblock %}
+{% block content %}
+<div class="panel">
+  <h1>Fault control and telemetry</h1>
+  <p class="muted">
+    Toggle service faults, run traffic bursts, and export a TriageAI-compatible telemetry window from the real stack.
+  </p>
+</div>
+
+<div class="grid-3" style="margin-top: 20px;">
+  <div class="metric">
+    <div class="muted">Active request buckets</div>
+    <div class="value">{{ summary.get("request_buckets", 0) }}</div>
+  </div>
+  <div class="metric">
+    <div class="muted">Average latency</div>
+    <div class="value">{{ summary.get("avg_latency_ms", 0) }} ms</div>
+  </div>
+  <div class="metric">
+    <div class="muted">Window error score</div>
+    <div class="value">{{ summary.get("window_error_score", 0) }}</div>
+  </div>
+</div>
+
+<div class="grid-2" style="margin-top: 20px;">
+  <div class="panel">
+    <h3>Scenario presets</h3>
+    <form method="post" action="/admin/scenario" class="stack">
+      <label for="scenario">Choose scenario</label>
+      <select id="scenario" name="scenario">
+        {% for scenario in scenarios %}
+        <option value="{{ scenario }}">{{ scenario }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit">Apply scenario</button>
+    </form>
+    <div style="height: 16px;"></div>
+    <div class="grid-2">
+      <form method="post" action="/admin/burst">
+        <input type="hidden" name="burst_type" value="browse">
+        <button class="secondary" type="submit">Run browse burst</button>
+      </form>
+      <form method="post" action="/admin/burst">
+        <input type="hidden" name="burst_type" value="checkout">
+        <button class="secondary" type="submit">Run checkout burst</button>
+      </form>
+    </div>
+    <div style="height: 12px;"></div>
+    <form method="post" action="/admin/reset-telemetry">
+      <button class="secondary" type="submit">Reset telemetry</button>
+    </form>
+    <div style="height: 12px;"></div>
+    <a class="pill" href="{{ download_url }}">Download triage CSV</a>
+  </div>
+
+  <div class="panel">
+    <h3>Current active faults</h3>
+    {% if summary.get("active_faults") %}
+      {% for service, service_faults in summary.get("active_faults", {}).items() %}
+      <div class="fault-box" style="margin-bottom: 12px;">
+        <strong>{{ service }}</strong>
+        <ul>
+          {% for fault, item in service_faults.items() %}
+          <li>{{ fault }} (intensity={{ item.intensity }})</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endfor %}
+    {% else %}
+    <p class="muted">No active faults. The stack is healthy.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="panel" style="margin-top: 20px;">
+  <h3>Per-service fault toggles</h3>
+  <div class="stack">
+    {% for service, service_faults in faults.items() %}
+    <div class="fault-box">
+      <strong>{{ service }}</strong>
+      {% for fault_name, item in service_faults.items() %}
+      <form method="post" action="/admin/fault" class="fault-row">
+        <input type="hidden" name="service" value="{{ service }}">
+        <input type="hidden" name="fault" value="{{ fault_name }}">
+        <div>
+          <div><strong>{{ fault_name }}</strong></div>
+          <div class="tiny muted">{{ item.description }}</div>
+        </div>
+        <div>
+          <label>State</label>
+          <select name="enabled">
+            <option value="true" {% if item.enabled %}selected{% endif %}>enabled</option>
+            <option value="false" {% if not item.enabled %}selected{% endif %}>disabled</option>
+          </select>
+        </div>
+        <div>
+          <label>Intensity</label>
+          <input type="number" step="0.05" min="0" max="1" name="intensity" value="{{ item.intensity }}">
+        </div>
+        <div>
+          <button type="submit">Update</button>
+        </div>
+      </form>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="grid-2" style="margin-top: 20px;">
+  <div class="panel">
+    <h3>Recent telemetry buckets</h3>
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Bucket</th>
+          <th>Error</th>
+          <th>Latency</th>
+          <th>CPU</th>
+          <th>Memory</th>
+          <th>Queue</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in summary.get("window", []) %}
+        <tr>
+          <td>{{ row.minute }}</td>
+          <td>{{ row.error_rate }}</td>
+          <td>{{ row.latency_ms }}</td>
+          <td>{{ row.cpu_pct }}</td>
+          <td>{{ row.memory_pct }}</td>
+          <td>{{ row.queue_depth }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h3>Recent service events</h3>
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Service</th>
+          <th>Path</th>
+          <th>Status</th>
+          <th>Latency</th>
+          <th>Queue</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in summary.get("recent_events", []) %}
+        <tr>
+          <td>{{ row.service }}</td>
+          <td>{{ row.path }}</td>
+          <td>{{ row.status_code }}</td>
+          <td>{{ "%.1f"|format(row.latency_ms) }} ms</td>
+          <td>{{ "%.2f"|format(row.queue_depth) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

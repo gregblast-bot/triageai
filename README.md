@@ -6,6 +6,7 @@ TriageAI is a starter incident-triage project focused on:
 - fault-type classification
 - root-cause service prediction
 - similar-incident retrieval
+- local retrieval-only RAG for supporting context
 
 This scaffold is built to get a course project moving quickly. It includes:
 
@@ -13,6 +14,7 @@ This scaffold is built to get a course project moving quickly. It includes:
 - feature extraction from incident metrics
 - baseline machine learning training scripts
 - evaluation scripts
+- a free local retrieval index built from incident cases and curated notes
 - a Streamlit demo app
 
 ## Project Structure
@@ -53,7 +55,7 @@ Convert RCAEval data into digestible file format:
 python3 -m src.data_converter
 ```
 
-Generate starter data and train baseline models:
+Generate processed data, train baseline models, and build the retrieval index:
 
 ```bash
 python3 -m src.train_models
@@ -71,9 +73,17 @@ Start the app:
 streamlit run app.py
 ```
 
+Run the companion simulator app:
+
+```bash
+streamlit run simulator_app.py
+```
+
 ## Notes
 
 - If no dataset exists yet, the code auto-generates a synthetic starter dataset in `data/processed/`.
 - The current scaffold does not train remediation-action recommendations because the project scope was narrowed to tasks that public AIOps datasets can support more honestly.
 - Replace the synthetic dataset with your selected public dataset once your preprocessing pipeline is ready.
 - The starter scaffold is pinned for Python 3.8+.
+- The current RAG layer is retrieval-only and fully local. It does not require any paid LLM API.
+- `simulator_app.py` provides a small ecommerce-like app that generates TriageAI-compatible telemetry and can deliberately inject failure scenarios such as CPU exhaustion, memory leak, queue congestion, auth failure, dependency outage, and cascading failure.

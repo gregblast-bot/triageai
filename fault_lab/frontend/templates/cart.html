@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Fault Lab Cart{% endblock %}
+{% block content %}
+<div class="panel">
+  <h1>Cart and checkout</h1>
+  <p class="muted">This page exercises the cart service and the full checkout path through auth, cart, catalog, and checkout services.</p>
+</div>
+
+<div class="grid-2" style="margin-top: 20px;">
+  <div class="panel">
+    <h3>Items</h3>
+    {% if line_items %}
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Product</th>
+          <th>Qty</th>
+          <th>Unit</th>
+          <th>Total</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in line_items %}
+        <tr>
+          <td>{{ item.name }}</td>
+          <td>{{ item.quantity }}</td>
+          <td>${{ "%.2f"|format(item.unit_price) }}</td>
+          <td>${{ "%.2f"|format(item.line_total) }}</td>
+          <td>
+            <form method="post" action="/cart/remove/{{ item.product_id }}">
+              <button class="secondary" type="submit">Remove</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">Your cart is empty. Go back to the storefront and add something.</p>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <h3>Checkout summary</h3>
+    <div class="metric">
+      <div class="muted">Subtotal</div>
+      <div class="value">${{ "%.2f"|format(subtotal) }}</div>
+    </div>
+    <div style="height: 16px;"></div>
+    <form method="post" action="/checkout">
+      <button type="submit">Run checkout</button>
+    </form>
+    <p class="muted tiny" style="margin-top: 12px;">
+      If auth or downstream services are faulted, checkout will fail and the error will surface here.
+    </p>
+  </div>
+</div>
+{% endblock %}
