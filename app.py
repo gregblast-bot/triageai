@@ -55,17 +55,19 @@ def render_training_panel():
 
     classifier_options = {
         "Random Forest": "random_forest",
+        "Random Forest (Balanced)": "random_forest_balanced",
+        "Random Forest (Balanced Subsample)": "random_forest_balanced_subsample",
         "Logistic Regression": "logistic_regression",
     }
     selected_fault_label = st.sidebar.selectbox(
         "Fault classifier",
         options=list(classifier_options.keys()),
-        index=0,
+        index=2,
     )
     selected_root_label = st.sidebar.selectbox(
         "Root-cause classifier",
         options=list(classifier_options.keys()),
-        index=0,
+        index=2,
     )
     st.sidebar.caption("Anomaly detection remains Isolation Forest.")
 

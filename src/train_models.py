@@ -23,7 +23,12 @@ from .features import build_feature_frame, get_numeric_feature_columns
 from .rag import build_rag_index
 
 
-SUPPORTED_CLASSIFIERS = ("random_forest", "logistic_regression")
+SUPPORTED_CLASSIFIERS = (
+    "random_forest",
+    "random_forest_balanced",
+    "random_forest_balanced_subsample",
+    "logistic_regression",
+)
 
 
 def _get_contamination_rate(anomaly_rate: float) -> float:
@@ -46,6 +51,18 @@ def build_classifier_pipeline(
 
     if classifier_name == "random_forest":
         classifier = RandomForestClassifier(n_estimators=250, random_state=42)
+    elif classifier_name == "random_forest_balanced":
+        classifier = RandomForestClassifier(
+            n_estimators=250,
+            random_state=42,
+            class_weight="balanced",
+        )
+    elif classifier_name == "random_forest_balanced_subsample":
+        classifier = RandomForestClassifier(
+            n_estimators=250,
+            random_state=42,
+            class_weight="balanced_subsample",
+        )
     else:
         classifier = LogisticRegression(
             max_iter=2000,
@@ -76,8 +93,8 @@ def _fit_similarity_index(feature_frame: pd.DataFrame, numeric_columns: list[str
 
 
 def train_all_models(
-    fault_classifier_name: str = "random_forest",
-    root_cause_classifier_name: str = "random_forest",
+    fault_classifier_name: str = "random_forest_balanced_subsample",
+    root_cause_classifier_name: str = "random_forest_balanced_subsample",
 ) -> dict:
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
