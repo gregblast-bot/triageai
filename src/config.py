@@ -16,6 +16,7 @@ ANOMALY_MODEL_PATH = MODELS_DIR / "anomaly_model.joblib"
 FAULT_MODEL_PATH = MODELS_DIR / "fault_model.joblib"
 ROOT_CAUSE_MODEL_PATH = MODELS_DIR / "root_cause_model.joblib"
 SIMILARITY_INDEX_PATH = MODELS_DIR / "similarity_index.joblib"
+RAG_INDEX_PATH = MODELS_DIR / "rag_index.joblib"
 EVAL_SUMMARY_PATH = MODELS_DIR / "eval_summary.json"
 
 MODEL_FILES = {
@@ -23,6 +24,7 @@ MODEL_FILES = {
     "fault": FAULT_MODEL_PATH,
     "root_cause": ROOT_CAUSE_MODEL_PATH,
     "similarity": SIMILARITY_INDEX_PATH,
+    "rag": RAG_INDEX_PATH,
 }
 
 METRIC_COLUMNS = [
