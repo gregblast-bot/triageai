@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Fault Lab{% endblock %}</title>
+  <style>
+    :root {
+      --bg: #f3efe7;
+      --panel: #fffdf8;
+      --ink: #1b1a18;
+      --muted: #6b655d;
+      --accent: #0f766e;
+      --danger: #b91c1c;
+      --warn: #a16207;
+      --border: #d9d0c3;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      background: radial-gradient(circle at top, #fbf8f1 0%, var(--bg) 55%, #ece5d7 100%);
+      color: var(--ink);
+    }
+    a { color: inherit; text-decoration: none; }
+    .shell { max-width: 1180px; margin: 0 auto; padding: 24px; }
+    .nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 24px;
+      padding: 14px 18px;
+      background: rgba(255, 253, 248, 0.88);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      backdrop-filter: blur(10px);
+    }
+    .nav-links, .nav-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .brand { font-size: 1.35rem; font-weight: 700; letter-spacing: 0.02em; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: #faf5eb;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+    .banner {
+      margin-bottom: 18px;
+      padding: 14px 16px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: #fff7ed;
+    }
+    .banner.success { background: #ecfdf5; border-color: #99f6e4; }
+    .banner.error { background: #fef2f2; border-color: #fecaca; }
+    .hero {
+      display: grid;
+      grid-template-columns: 1.35fr 0.9fr;
+      gap: 20px;
+      margin-bottom: 24px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 20px;
+      box-shadow: 0 12px 24px rgba(51, 39, 24, 0.06);
+    }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+    .card {
+      padding: 18px;
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      background: #fffaf2;
+      min-height: 220px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .card h3 { margin: 0 0 8px; }
+    .muted { color: var(--muted); }
+    .price { font-size: 1.25rem; font-weight: 700; margin: 10px 0; }
+    form { margin: 0; }
+    input, select, button {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      font: inherit;
+      background: white;
+    }
+    button {
+      cursor: pointer;
+      background: linear-gradient(180deg, #115e59, #0f766e);
+      color: white;
+      border: none;
+      font-weight: 700;
+    }
+    button.secondary {
+      background: #efe8dd;
+      color: var(--ink);
+      border: 1px solid var(--border);
+    }
+    .stack { display: grid; gap: 12px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.95rem;
+    }
+    .table th, .table td {
+      text-align: left;
+      padding: 10px 8px;
+      border-bottom: 1px solid #eee3d3;
+      vertical-align: top;
+    }
+    .metric {
+      padding: 16px;
+      border-radius: 16px;
+      background: #f9f2e6;
+      border: 1px solid var(--border);
+    }
+    .metric .value { font-size: 1.55rem; font-weight: 700; }
+    .fault-box {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 16px;
+      background: #fffcf6;
+    }
+    .fault-row {
+      display: grid;
+      grid-template-columns: 1.3fr 0.9fr 0.9fr 0.8fr;
+      gap: 10px;
+      align-items: end;
+      margin-top: 12px;
+    }
+    .tiny { font-size: 0.86rem; }
+    @media (max-width: 900px) {
+      .hero, .grid-2, .grid-3, .fault-row { grid-template-columns: 1fr; }
+      .nav { flex-direction: column; align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="nav">
+      <div class="nav-links">
+        <a class="brand" href="/">Fault Lab</a>
+        <a class="pill" href="/">Storefront</a>
+        <a class="pill" href="/cart">Cart</a>
+        <a class="pill" href="/admin">Admin</a>
+      </div>
+      <div class="nav-actions">
+        {% if user_email %}
+        <span class="pill">Signed in as {{ user_email }}</span>
+        <form method="post" action="/logout">
+          <button class="secondary" type="submit">Sign out</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+    {% if message %}
+    <div class="banner {{ level }}">{{ message }}</div>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </div>
+</body>
+</html>

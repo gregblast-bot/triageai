@@ -12,7 +12,8 @@ from .config import (
     SIMILARITY_INDEX_PATH,
 )
 from .data import load_incidents, load_metrics
-from .features import build_feature_frame
+from .features import build_feature_frame, build_feature_row
+from .rag import retrieve_context
 from .train_models import train_all_models
 
 
@@ -28,12 +29,13 @@ def _load_feature_frame() -> pd.DataFrame:
     return build_feature_frame(incidents, metrics)
 
 
-def triage_incident(incident_id: str, similar_k: int = 3) -> dict:
+def _run_models_for_feature_row(
+    incident_row: pd.DataFrame,
+    *,
+    incident_id: str,
+    similar_k: int = 3,
+) -> dict:
     _ensure_models()
-    feature_frame = _load_feature_frame()
-    incident_row = feature_frame.loc[feature_frame["incident_id"] == incident_id].copy()
-    if incident_row.empty:
-        raise ValueError(f"Unknown incident_id: {incident_id}")
 
     anomaly_bundle = joblib.load(ANOMALY_MODEL_PATH)
     fault_bundle = joblib.load(FAULT_MODEL_PATH)
@@ -56,10 +58,11 @@ def triage_incident(incident_id: str, similar_k: int = 3) -> dict:
     root_classes = root_cause_model.classes_
     root_index = int(root_probabilities.argmax())
 
-    vectorizer = similarity_bundle["vectorizer"]
+    scaler = similarity_bundle["scaler"]
     matrix = similarity_bundle["matrix"]
+    similarity_numeric_columns = similarity_bundle["numeric_columns"]
     metadata = similarity_bundle["metadata"]
-    query_vector = vectorizer.transform(incident_row["text"])
+    query_vector = scaler.transform(incident_row[similarity_numeric_columns])
     scores = cosine_similarity(query_vector, matrix).flatten()
     ranked_indices = scores.argsort()[::-1]
 
@@ -79,7 +82,7 @@ def triage_incident(incident_id: str, similar_k: int = 3) -> dict:
         if len(similar_incidents) >= similar_k:
             break
 
-    return {
+    result = {
         "incident_id": incident_id,
         "unusual": unusual,
         "anomaly_score": anomaly_score,
@@ -89,6 +92,38 @@ def triage_incident(incident_id: str, similar_k: int = 3) -> dict:
         "root_cause_confidence": float(root_probabilities[root_index]),
         "top_similar_incidents": similar_incidents,
     }
+    rag_context = retrieve_context(incident_row.iloc[0], result)
+    result["retrieved_context"] = rag_context
+    return result
+
+
+def triage_incident(incident_id: str, similar_k: int = 3) -> dict:
+    feature_frame = _load_feature_frame()
+    incident_row = feature_frame.loc[feature_frame["incident_id"] == incident_id].copy()
+    if incident_row.empty:
+        raise ValueError(f"Unknown incident_id: {incident_id}")
+    return _run_models_for_feature_row(incident_row, incident_id=incident_id, similar_k=similar_k)
+
+
+def triage_custom_metrics(
+    metrics: pd.DataFrame,
+    *,
+    title: str = "Uploaded real incident",
+    description: str = "Custom metric window uploaded from an external application.",
+    incident_id: str = "CUSTOM-REAL-001",
+    similar_k: int = 3,
+) -> dict:
+    text = f"{title} {description}".strip()
+    feature_row = build_feature_row(
+        metrics,
+        incident_id=incident_id,
+        text=text,
+        fault_type="unlabeled",
+        root_cause_service="unlabeled",
+        is_anomalous=False,
+    )
+    feature_frame = pd.DataFrame([feature_row])
+    return _run_models_for_feature_row(feature_frame, incident_id=incident_id, similar_k=similar_k)
 
 
 if __name__ == "__main__":

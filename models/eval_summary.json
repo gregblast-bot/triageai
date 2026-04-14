@@ -1,9 +1,35 @@
 {
-  "anomaly_precision": 1.0,
-  "anomaly_recall": 0.35106382978723405,
-  "anomaly_f1": 0.5196850393700788,
-  "fault_accuracy": 1.0,
-  "fault_macro_f1": 1.0,
-  "root_cause_accuracy": 0.22340425531914893,
-  "root_cause_macro_f1": 0.18564814814814815
+  "anomaly_precision": 0.6785714285714286,
+  "anomaly_recall": 0.5507246376811594,
+  "anomaly_f1": 0.608,
+  "fault_accuracy": 0.9130434782608695,
+  "fault_macro_f1": 0.9052516041877743,
+  "root_cause_accuracy": 0.7898550724637681,
+  "root_cause_macro_f1": 0.5987030928841274,
+  "selected_models": {
+    "fault_type": "random_forest",
+    "root_cause_service": "random_forest"
+  },
+  "comparisons": {
+    "fault_type": {
+      "random_forest": {
+        "accuracy": 0.9130434782608695,
+        "macro_f1": 0.9052516041877743
+      },
+      "logistic_regression": {
+        "accuracy": 0.8115942028985508,
+        "macro_f1": 0.7576189736133093
+      }
+    },
+    "root_cause_service": {
+      "random_forest": {
+        "accuracy": 0.7898550724637681,
+        "macro_f1": 0.5987030928841274
+      },
+      "logistic_regression": {
+        "accuracy": 0.6014492753623188,
+        "macro_f1": 0.38918841575091573
+      }
+    }
+  }
 }
