@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Fault Lab Storefront{% endblock %}
+{% block content %}
+<div class="hero">
+  <div class="panel">
+    <h1>Operable ecommerce stack with injectable faults</h1>
+    <p class="muted">
+      Browse products, sign in, add items to a real cart service, and run checkout across multiple backend services.
+      Use the admin page to inject faults and export telemetry for TriageAI.
+    </p>
+    {% if service_issue %}
+    <div class="banner error">{{ service_issue }}</div>
+    {% endif %}
+    <div class="grid-2">
+      <form method="post" action="/search" class="stack">
+        <label for="query">Search catalog</label>
+        <input id="query" name="query" value="{{ query }}" placeholder="monitor, keyboard, dock">
+        <button type="submit">Search</button>
+      </form>
+      <div class="panel">
+        <h3>Session</h3>
+        <p class="muted">Cart items: {{ cart_count }}</p>
+        {% if not user_email %}
+        <form method="post" action="/login" class="stack">
+          <label for="email">Email</label>
+          <input id="email" name="email" value="demo@triage.ai">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" value="demo123">
+          <button type="submit">Sign in</button>
+        </form>
+        {% else %}
+        <p>Use the cart and checkout flows to exercise the backend.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="panel">
+    <h3>Demo credentials</h3>
+    <div class="stack tiny">
+      <div class="pill">demo@triage.ai / demo123</div>
+      <div class="pill">ops@triage.ai / ops123</div>
+      <div class="pill">Admin page lets you inject scenarios live</div>
+      <div class="pill">Telemetry export is available from the admin page</div>
+    </div>
+  </div>
+</div>
+
+<div class="cards">
+  {% for product in products %}
+  <div class="card">
+    <div>
+      <div class="muted">{{ product.category }}</div>
+      <h3>{{ product.name }}</h3>
+      <p class="muted">{{ product.description }}</p>
+    </div>
+    <div>
+      <div class="price">${{ "%.2f"|format(product.price) }}</div>
+      <div class="muted">Inventory: {{ product.inventory }}</div>
+      <form method="post" action="/cart/add/{{ product.id }}" style="margin-top: 14px;">
+        <button type="submit">Add to cart</button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}
