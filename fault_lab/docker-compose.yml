@@ -1,0 +1,85 @@
+services:
+  control-plane:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn fault_lab.services.control_plane:app --host 0.0.0.0 --port 8000
+    environment:
+      TELEMETRY_DB_PATH: /data/fault_lab.db
+    volumes:
+      - faultlab_data:/data
+    ports:
+      - "8001:8000"
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn fault_lab.services.auth_service:app --host 0.0.0.0 --port 8000
+    environment:
+      SERVICE_NAME: auth-service
+      CONTROL_BASE_URL: http://control-plane:8000
+    depends_on:
+      - control-plane
+
+  catalog-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn fault_lab.services.catalog_service:app --host 0.0.0.0 --port 8000
+    environment:
+      SERVICE_NAME: catalog-service
+      CONTROL_BASE_URL: http://control-plane:8000
+    depends_on:
+      - control-plane
+
+  cart-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn fault_lab.services.cart_service:app --host 0.0.0.0 --port 8000
+    environment:
+      SERVICE_NAME: cart-service
+      CONTROL_BASE_URL: http://control-plane:8000
+    depends_on:
+      - control-plane
+
+  checkout-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn fault_lab.services.checkout_service:app --host 0.0.0.0 --port 8000
+    environment:
+      SERVICE_NAME: checkout-service
+      CONTROL_BASE_URL: http://control-plane:8000
+      AUTH_BASE_URL: http://auth-service:8000
+      CART_BASE_URL: http://cart-service:8000
+      CATALOG_BASE_URL: http://catalog-service:8000
+    depends_on:
+      - control-plane
+      - auth-service
+      - cart-service
+      - catalog-service
+
+  storefront:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn fault_lab.frontend.app:app --host 0.0.0.0 --port 8080
+    environment:
+      CONTROL_BASE_URL: http://control-plane:8000
+      AUTH_BASE_URL: http://auth-service:8000
+      CATALOG_BASE_URL: http://catalog-service:8000
+      CART_BASE_URL: http://cart-service:8000
+      CHECKOUT_BASE_URL: http://checkout-service:8000
+    depends_on:
+      - control-plane
+      - auth-service
+      - catalog-service
+      - cart-service
+      - checkout-service
+    ports:
+      - "8090:8080"
+
+volumes:
+  faultlab_data:
