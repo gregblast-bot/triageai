@@ -17,6 +17,7 @@ from .config import (
     MODELS_DIR,
     ROOT_CAUSE_MODEL_PATH,
     SIMILARITY_INDEX_PATH,
+    get_contamination_rate,
 )
 from .data import load_incidents, load_metrics
 from .features import build_feature_frame, get_numeric_feature_columns
@@ -29,10 +30,6 @@ SUPPORTED_CLASSIFIERS = (
     "random_forest_balanced_subsample",
     "logistic_regression",
 )
-
-
-def _get_contamination_rate(anomaly_rate: float) -> float:
-    return min(max(float(anomaly_rate), 0.05), 0.35)
 
 
 def build_classifier_pipeline(
@@ -111,7 +108,7 @@ def train_all_models(
 
     anomaly_model = IsolationForest(
         n_estimators=250,
-        contamination=_get_contamination_rate(training_frame["is_anomalous"].mean()),
+        contamination=get_contamination_rate(training_frame["is_anomalous"].mean()),
         random_state=42,
     )
     anomaly_model.fit(training_frame[numeric_columns])

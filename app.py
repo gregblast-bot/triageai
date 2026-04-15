@@ -5,10 +5,10 @@ import joblib
 import pandas as pd
 import streamlit as st
 
-from src.config import FAULT_MODEL_PATH, METRIC_COLUMNS, MODEL_FILES, ROOT_CAUSE_MODEL_PATH
+from src.config import FAULT_MODEL_PATH, METRIC_COLUMNS, ROOT_CAUSE_MODEL_PATH
 from src.data import load_incidents, load_metrics
 from src.train_models import train_all_models
-from src.triage import triage_custom_metrics, triage_incident
+from src.triage import clear_caches, models_ready, triage_custom_metrics, triage_incident
 
 
 st.set_page_config(page_title="TriageAI", layout="wide")
@@ -22,10 +22,6 @@ def get_incidents():
 @st.cache_data
 def get_metrics():
     return load_metrics()
-
-
-def models_ready() -> bool:
-    return all(path.exists() for path in MODEL_FILES.values())
 
 
 def get_active_classifier_config() -> dict:
@@ -86,6 +82,7 @@ def render_training_panel():
                 root_cause_classifier_name=classifier_options[selected_root_label],
             )
         st.cache_data.clear()
+        clear_caches()
         st.success(
             "Training complete. "
             f"fault=`{summary['fault_classifier_name']}`, "
@@ -276,6 +273,19 @@ def main():
         )
         st.dataframe(custom_metrics_template(), use_container_width=True)
         return
+
+    coerced_columns = []
+    for column in METRIC_COLUMNS:
+        original = uploaded_metrics[column]
+        numeric = pd.to_numeric(original, errors="coerce")
+        non_numeric_count = int(original.notna().sum() - numeric.notna().sum())
+        if non_numeric_count > 0:
+            coerced_columns.append(f"`{column}` ({non_numeric_count} values)")
+    if coerced_columns:
+        st.warning(
+            "Some metric columns contain non-numeric values that will be treated as zero: "
+            + ", ".join(coerced_columns)
+        )
 
     render_custom_incident_overview(title, description)
     render_metric_charts(uploaded_metrics)

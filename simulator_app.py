@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from src.config import METRIC_COLUMNS, MODEL_FILES
+from src.config import METRIC_COLUMNS
 from src.simulator import (
     PAGES,
     SCENARIO_DESCRIPTIONS,
@@ -18,7 +18,7 @@ from src.simulator import (
     simulate_background_traffic,
     warm_start_state,
 )
-from src.triage import triage_custom_metrics
+from src.triage import models_ready, triage_custom_metrics
 
 
 st.set_page_config(page_title="ShopSim", layout="wide")
@@ -36,10 +36,6 @@ def get_sim_state() -> dict:
         st.session_state["shop_sim_state"] = default_simulation_state()
         warm_start_state(st.session_state["shop_sim_state"])
     return st.session_state["shop_sim_state"]
-
-
-def models_ready() -> bool:
-    return all(path.exists() for path in MODEL_FILES.values())
 
 
 def render_sidebar(state: dict) -> str:

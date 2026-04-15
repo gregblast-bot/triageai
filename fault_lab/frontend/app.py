@@ -107,7 +107,7 @@ async def load_admin_context(request: Request) -> dict:
         "summary": telemetry_payload if telemetry_status == 200 else {},
         "message": request.query_params.get("message"),
         "level": request.query_params.get("level", "info"),
-        "download_url": "http://localhost:8001/api/telemetry/window.csv?limit=120",
+        "download_url": f"{CONTROL_BASE_URL}/api/telemetry/window.csv?limit=120",
     }
 
 

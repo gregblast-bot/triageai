@@ -37,3 +37,7 @@ METRIC_COLUMNS = [
 ]
 
 TEXT_COLUMNS = ["title", "description"]
+
+
+def get_contamination_rate(anomaly_rate: float) -> float:
+    return min(max(float(anomaly_rate), 0.05), 0.35)

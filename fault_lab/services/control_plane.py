@@ -4,6 +4,8 @@ import csv
 import io
 import sqlite3
 import threading
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI
@@ -13,7 +15,13 @@ from pydantic import BaseModel
 from fault_lab.common.config import SCENARIO_PRESETS, SERVICE_FAULTS, TELEMETRY_DB_PATH
 
 
-app = FastAPI(title="Fault Lab Control Plane")
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    init_db()
+    yield
+
+
+app = FastAPI(title="Fault Lab Control Plane", lifespan=lifespan)
 db_lock = threading.Lock()
 
 
@@ -54,43 +62,45 @@ def get_conn() -> sqlite3.Connection:
 def init_db() -> None:
     with db_lock:
         conn = get_conn()
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS faults (
-                service TEXT NOT NULL,
-                fault TEXT NOT NULL,
-                enabled INTEGER NOT NULL,
-                intensity REAL NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (service, fault)
-            );
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS faults (
+                    service TEXT NOT NULL,
+                    fault TEXT NOT NULL,
+                    enabled INTEGER NOT NULL,
+                    intensity REAL NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (service, fault)
+                );
 
-            CREATE TABLE IF NOT EXISTS telemetry_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT NOT NULL,
-                service TEXT NOT NULL,
-                path TEXT NOT NULL,
-                status_code INTEGER NOT NULL,
-                latency_ms REAL NOT NULL,
-                cpu_pct REAL NOT NULL,
-                memory_mb REAL NOT NULL,
-                queue_depth REAL NOT NULL,
-                error INTEGER NOT NULL,
-                auth_error INTEGER NOT NULL
-            );
-            """
-        )
-        for service, faults in SERVICE_FAULTS.items():
-            for fault in faults:
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO faults (service, fault, enabled, intensity, updated_at)
-                    VALUES (?, ?, 0, 0.0, ?)
-                    """,
-                    (service, fault, utc_now()),
-                )
-        conn.commit()
-        conn.close()
+                CREATE TABLE IF NOT EXISTS telemetry_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    service TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    status_code INTEGER NOT NULL,
+                    latency_ms REAL NOT NULL,
+                    cpu_pct REAL NOT NULL,
+                    memory_mb REAL NOT NULL,
+                    queue_depth REAL NOT NULL,
+                    error INTEGER NOT NULL,
+                    auth_error INTEGER NOT NULL
+                );
+                """
+            )
+            for service, faults in SERVICE_FAULTS.items():
+                for fault in faults:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO faults (service, fault, enabled, intensity, updated_at)
+                        VALUES (?, ?, 0, 0.0, ?)
+                        """,
+                        (service, fault, utc_now()),
+                    )
+            conn.commit()
+        finally:
+            conn.close()
 
 
 def set_all_faults_healthy(conn: sqlite3.Connection) -> None:
@@ -118,10 +128,12 @@ def apply_scenario(conn: sqlite3.Connection, scenario: str) -> None:
 def fault_state() -> dict:
     with db_lock:
         conn = get_conn()
-        rows = conn.execute(
-            "SELECT service, fault, enabled, intensity FROM faults ORDER BY service, fault"
-        ).fetchall()
-        conn.close()
+        try:
+            rows = conn.execute(
+                "SELECT service, fault, enabled, intensity FROM faults ORDER BY service, fault"
+            ).fetchall()
+        finally:
+            conn.close()
 
     payload: dict[str, dict[str, dict[str, float | bool]]] = {}
     for row in rows:
@@ -137,17 +149,19 @@ def fault_state() -> dict:
 def recent_events(limit: int = 40) -> list[dict]:
     with db_lock:
         conn = get_conn()
-        rows = conn.execute(
-            """
-            SELECT created_at, service, path, status_code, latency_ms, cpu_pct, memory_mb,
-                   queue_depth, error, auth_error
-            FROM telemetry_events
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-        conn.close()
+        try:
+            rows = conn.execute(
+                """
+                SELECT created_at, service, path, status_code, latency_ms, cpu_pct, memory_mb,
+                       queue_depth, error, auth_error
+                FROM telemetry_events
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        finally:
+            conn.close()
     return [dict(row) for row in rows]
 
 
@@ -155,16 +169,18 @@ def build_window(limit: int = 120) -> list[dict]:
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=limit * 2)
     with db_lock:
         conn = get_conn()
-        rows = conn.execute(
-            """
-            SELECT created_at, latency_ms, cpu_pct, memory_mb, queue_depth, error, auth_error
-            FROM telemetry_events
-            WHERE created_at >= ?
-            ORDER BY created_at ASC
-            """,
-            (cutoff.isoformat(),),
-        ).fetchall()
-        conn.close()
+        try:
+            rows = conn.execute(
+                """
+                SELECT created_at, latency_ms, cpu_pct, memory_mb, queue_depth, error, auth_error
+                FROM telemetry_events
+                WHERE created_at >= ?
+                ORDER BY created_at ASC
+                """,
+                (cutoff.isoformat(),),
+            ).fetchall()
+        finally:
+            conn.close()
 
     buckets: dict[int, list[sqlite3.Row]] = {}
     now = datetime.now(timezone.utc)
@@ -209,11 +225,6 @@ def build_window(limit: int = 120) -> list[dict]:
     return window
 
 
-@app.on_event("startup")
-def on_startup() -> None:
-    init_db()
-
-
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
@@ -247,9 +258,11 @@ def set_scenario(request: ScenarioRequest) -> dict:
         return {"ok": False, "detail": f"Unknown scenario: {request.scenario}"}
     with db_lock:
         conn = get_conn()
-        apply_scenario(conn, request.scenario)
-        conn.commit()
-        conn.close()
+        try:
+            apply_scenario(conn, request.scenario)
+            conn.commit()
+        finally:
+            conn.close()
     return {"ok": True, "scenario": request.scenario}
 
 
@@ -257,22 +270,24 @@ def set_scenario(request: ScenarioRequest) -> dict:
 def toggle_fault(request: FaultToggleRequest) -> dict:
     with db_lock:
         conn = get_conn()
-        conn.execute(
-            """
-            UPDATE faults
-            SET enabled = ?, intensity = ?, updated_at = ?
-            WHERE service = ? AND fault = ?
-            """,
-            (
-                1 if request.enabled else 0,
-                max(0.0, min(1.0, request.intensity if request.enabled else 0.0)),
-                utc_now(),
-                request.service,
-                request.fault,
-            ),
-        )
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute(
+                """
+                UPDATE faults
+                SET enabled = ?, intensity = ?, updated_at = ?
+                WHERE service = ? AND fault = ?
+                """,
+                (
+                    1 if request.enabled else 0,
+                    max(0.0, min(1.0, request.intensity if request.enabled else 0.0)),
+                    utc_now(),
+                    request.service,
+                    request.fault,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
     return {"ok": True}
 
 
@@ -280,29 +295,31 @@ def toggle_fault(request: FaultToggleRequest) -> dict:
 def ingest_telemetry(event: TelemetryEvent) -> dict:
     with db_lock:
         conn = get_conn()
-        conn.execute(
-            """
-            INSERT INTO telemetry_events (
-                created_at, service, path, status_code, latency_ms, cpu_pct,
-                memory_mb, queue_depth, error, auth_error
+        try:
+            conn.execute(
+                """
+                INSERT INTO telemetry_events (
+                    created_at, service, path, status_code, latency_ms, cpu_pct,
+                    memory_mb, queue_depth, error, auth_error
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    utc_now(),
+                    event.service,
+                    event.path,
+                    event.status_code,
+                    float(event.latency_ms),
+                    float(event.cpu_pct),
+                    float(event.memory_mb),
+                    float(event.queue_depth),
+                    1 if event.error else 0,
+                    1 if event.auth_error else 0,
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                utc_now(),
-                event.service,
-                event.path,
-                event.status_code,
-                float(event.latency_ms),
-                float(event.cpu_pct),
-                float(event.memory_mb),
-                float(event.queue_depth),
-                1 if event.error else 0,
-                1 if event.auth_error else 0,
-            ),
-        )
-        conn.commit()
-        conn.close()
+            conn.commit()
+        finally:
+            conn.close()
     return {"ok": True}
 
 
@@ -364,7 +381,9 @@ def telemetry_window_csv(limit: int = 120) -> str:
 def reset_telemetry() -> dict:
     with db_lock:
         conn = get_conn()
-        conn.execute("DELETE FROM telemetry_events")
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute("DELETE FROM telemetry_events")
+            conn.commit()
+        finally:
+            conn.close()
     return {"ok": True}

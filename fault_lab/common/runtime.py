@@ -105,6 +105,15 @@ class ServiceRuntime:
 
 
 def busy_wait(seconds: float) -> None:
+    """Burn CPU for *seconds* to simulate CPU exhaustion."""
     deadline = time.perf_counter() + max(0.0, seconds)
     while time.perf_counter() < deadline:
         pass
+
+
+async def async_busy_wait(seconds: float) -> None:
+    """Run busy_wait off the event loop so other coroutines aren't starved."""
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, busy_wait, seconds)

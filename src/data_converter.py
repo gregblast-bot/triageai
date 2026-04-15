@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 from pathlib import Path
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 FILE_MAP = {"RE1-OB": "data.csv", "RE1-SS": "simple_data.csv", "RE1-TT": "simple_data.csv",
@@ -52,6 +55,7 @@ def _select_window(frame: pd.DataFrame, start: int, size: int) -> pd.DataFrame:
 
 
 def _assign_data_split(*parts: str) -> str:
+    # Deterministic hash-based split (not cryptographic — sha1 is fine for bucketing).
     key = "::".join(parts)
     bucket = int(hashlib.sha1(key.encode("utf-8")).hexdigest()[:8], 16) % 10
     return "Train" if bucket < 8 else "Test"
@@ -141,8 +145,7 @@ def convert_data(root_path: str = "data/raw", output_dir: str = "data/processed"
             continue
 
         target_filename = FILE_MAP[top_folder.name]
-        print("*" * 50)
-        print(f"Processing Top-Level Folder: {top_folder.name}")
+        logger.info("Processing top-level folder: %s", top_folder.name)
 
         for fault_folder in sorted(top_folder.iterdir()):
             if not fault_folder.is_dir():
@@ -152,7 +155,7 @@ def convert_data(root_path: str = "data/raw", output_dir: str = "data/processed"
             if fault_type is None or service_name is None:
                 continue
 
-            print(f"Processing Folder: {fault_folder.name} -> service={service_name}, fault={fault_type}")
+            logger.info("Processing folder: %s -> service=%s, fault=%s", fault_folder.name, service_name, fault_type)
 
             for run_folder in sorted(fault_folder.iterdir()):
                 if not run_folder.is_dir():
@@ -202,7 +205,7 @@ def convert_data(root_path: str = "data/raw", output_dir: str = "data/processed"
 
     pd.DataFrame(all_incidents).to_csv(f"{output_dir}/incidents.csv", index=False)
     pd.DataFrame(all_metrics).to_csv(f"{output_dir}/metrics.csv", index=False)
-    print(f"\nFinished! Compiled {incident_counter - 1} incident windows.")
+    logger.info("Finished! Compiled %d incident windows.", incident_counter - 1)
 
 
 if __name__ == "__main__":

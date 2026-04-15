@@ -15,6 +15,7 @@ REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "6.0"))
 FAULT_CACHE_TTL_SEC = float(os.getenv("FAULT_CACHE_TTL_SEC", "0.75"))
 TELEMETRY_DB_PATH = Path(os.getenv("TELEMETRY_DB_PATH", "/data/fault_lab.db"))
 
+# Demo-only plaintext credentials — NOT suitable for production use.
 DEFAULT_USERS = {
     "demo@triage.ai": {
         "password": "demo123",
