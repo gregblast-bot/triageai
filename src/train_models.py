@@ -10,6 +10,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import GridSearchCV
 
 from .config import (
     ANOMALY_MODEL_PATH,
@@ -89,9 +90,38 @@ def _fit_similarity_index(feature_frame: pd.DataFrame, numeric_columns: list[str
     }
 
 
+def get_param_grid(classifier_name: str) -> dict:
+    """
+    Returns parameter grids. Use 'classifier__' prefix to target the 
+    pipeline step named 'classifier'.
+    """
+    if "random_forest" in classifier_name:
+        return {
+            # Random Forest Tuning
+            'classifier__n_estimators': [250, 500],
+            'classifier__max_depth': [10, 20, None],
+            'classifier__max_features': ['sqrt', 'log2'],
+            'classifier__min_samples_split': [2, 5],
+            
+            # TF-IDF Tuning (reaching into the ColumnTransformer)
+            'preprocessor__text__max_features': [200, 400, 600],
+            'preprocessor__text__ngram_range': [(1, 1), (1, 2)],
+            'preprocessor__text__use_idf': [True, False]
+        }
+        
+    elif classifier_name == "logistic_regression":
+        return {
+            'classifier__C': [0.01, 0.1, 1.0, 10.0],
+            'classifier__penalty': ['l1', 'l2'],
+            'preprocessor__text__max_features': [400, 600]
+        }
+    return {}
+
+
 def train_all_models(
     fault_classifier_name: str = "random_forest_balanced_subsample",
     root_cause_classifier_name: str = "random_forest_balanced_subsample",
+    use_grid_search: bool = True
 ) -> dict:
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -114,13 +144,42 @@ def train_all_models(
     anomaly_model.fit(training_frame[numeric_columns])
 
     fault_model = build_classifier_pipeline(numeric_columns, fault_classifier_name)
-    fault_model.fit(training_frame[numeric_columns + ["text"]], training_frame["fault_type"])
+    if use_grid_search:
+        fault_search = GridSearchCV(
+            fault_model, 
+            get_param_grid(fault_classifier_name), 
+            cv=3, 
+            n_jobs=-1, 
+            scoring='f1_weighted'
+        )
+        try:
+            fault_search.fit(training_frame[numeric_columns + ["text"]], training_frame["fault_type"])
+            fault_model = fault_search.best_estimator_
+            print(f"Best Fault Params: {fault_search.best_params_}")
+        except Exception as e:
+            print(f"GridSearch failed: {e}")
+            fault_model = fault_model.fit(training_frame[numeric_columns + ["text"]], training_frame["fault_type"])
+    else:
+        fault_model.fit(training_frame[numeric_columns + ["text"]], training_frame["fault_type"])
 
     root_cause_model = build_classifier_pipeline(numeric_columns, root_cause_classifier_name)
-    root_cause_model.fit(
-        training_frame[numeric_columns + ["text"]],
-        training_frame["root_cause_service"],
-    )
+    if use_grid_search:
+        root_cause_search = GridSearchCV(
+            root_cause_model, 
+            get_param_grid(root_cause_classifier_name), 
+            cv=3, 
+            n_jobs=-1, 
+            scoring='f1_weighted'
+        )
+        try:
+            root_cause_search.fit(training_frame[numeric_columns + ["text"]], training_frame["root_cause_service"])
+            root_cause_model = root_cause_search.best_estimator_
+            print(f"Best Root Cause Params: {root_cause_search.best_params_}")
+        except Exception as e:
+            print(f"GridSearch failed: {e}")
+            root_cause_model = root_cause_model.fit(training_frame[numeric_columns + ["text"]], training_frame["root_cause_service"])
+    else:
+        root_cause_model.fit(training_frame[numeric_columns + ["text"]], training_frame["root_cause_service"])
 
     similarity_index = _fit_similarity_index(training_frame, numeric_columns)
     training_incidents = incidents.loc[
