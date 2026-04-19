@@ -12,7 +12,13 @@ from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from fault_lab.common.config import SCENARIO_PRESETS, SERVICE_FAULTS, TELEMETRY_DB_PATH
+from fault_lab.common.config import (
+    SCENARIO_EXPECTATION,
+    SCENARIO_PRESETS,
+    SERVICE_FAULTS,
+    TELEMETRY_BUCKET_SEC,
+    TELEMETRY_DB_PATH,
+)
 
 
 @asynccontextmanager
@@ -87,7 +93,20 @@ def init_db() -> None:
                     error INTEGER NOT NULL,
                     auth_error INTEGER NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS scenario_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    scenario TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO scenario_state (id, scenario, updated_at)
+                VALUES (1, 'healthy', ?)
+                """,
+                (utc_now(),),
             )
             for service, faults in SERVICE_FAULTS.items():
                 for fault in faults:
@@ -123,6 +142,29 @@ def apply_scenario(conn: sqlite3.Connection, scenario: str) -> None:
                 """,
                 (float(intensity), utc_now(), service, fault),
             )
+    conn.execute(
+        """
+        INSERT INTO scenario_state (id, scenario, updated_at)
+        VALUES (1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET scenario = excluded.scenario,
+                                      updated_at = excluded.updated_at
+        """,
+        (scenario, utc_now()),
+    )
+
+
+def current_scenario() -> str:
+    with db_lock:
+        conn = get_conn()
+        try:
+            row = conn.execute(
+                "SELECT scenario FROM scenario_state WHERE id = 1"
+            ).fetchone()
+        finally:
+            conn.close()
+    if not row:
+        return "healthy"
+    return str(row["scenario"])
 
 
 def fault_state() -> dict:
@@ -165,8 +207,55 @@ def recent_events(limit: int = 40) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def _aggregate_bucket(bucket_rows: list[sqlite3.Row]) -> dict:
+    """Aggregate raw telemetry rows for a single bucket without magic clips.
+
+    Units chosen to match training data:
+    - cpu_pct: host-normalized CPU % already emitted by the runtime
+    - memory_pct: GB (emitted as MB by the runtime; converted here)
+    - latency_ms / queue_depth: raw values
+    - error_rate / auth_error_rate: error events per bucket
+    """
+    count = len(bucket_rows)
+    latency = sum(float(row["latency_ms"]) for row in bucket_rows) / count
+    cpu = sum(float(row["cpu_pct"]) for row in bucket_rows) / count
+    memory_mb = sum(float(row["memory_mb"]) for row in bucket_rows) / count
+    queue = max(float(row["queue_depth"]) for row in bucket_rows)
+    error_count = sum(int(row["error"]) for row in bucket_rows)
+    auth_errors = sum(int(row["auth_error"]) for row in bucket_rows)
+    return {
+        "error_rate": float(error_count),
+        "latency_ms": float(latency),
+        "cpu_pct": float(cpu),
+        "memory_pct": float(memory_mb / 1024.0),
+        "queue_depth": float(queue),
+        "auth_error_rate": float(auth_errors),
+    }
+
+
+def _idle_bucket() -> dict:
+    """Low-traffic baseline. Used only to seed the forward-fill at the start."""
+    return {
+        "error_rate": 0.0,
+        "latency_ms": 0.0,
+        "cpu_pct": 0.0,
+        "memory_pct": 0.0,
+        "queue_depth": 0.0,
+        "auth_error_rate": 0.0,
+    }
+
+
 def build_window(limit: int = 120) -> list[dict]:
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=limit * 2)
+    """Build a `limit`-length metric window anchored at "now".
+
+    Buckets are `TELEMETRY_BUCKET_SEC` seconds wide (60s by default) so a
+    120-sample window covers the same ~2h span the training data was built
+    from. Empty buckets forward-fill from the previous bucket instead of
+    reverting to a hardcoded idle baseline, which kept firing false spikes
+    when traffic was bursty.
+    """
+    bucket_sec = max(1.0, float(TELEMETRY_BUCKET_SEC))
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=bucket_sec * limit)
     with db_lock:
         conn = get_conn()
         try:
@@ -186,42 +275,21 @@ def build_window(limit: int = 120) -> list[dict]:
     now = datetime.now(timezone.utc)
     for row in rows:
         created = datetime.fromisoformat(row["created_at"])
-        delta = int((now - created).total_seconds())
-        if delta < 0 or delta >= limit:
+        delta_sec = (now - created).total_seconds()
+        if delta_sec < 0 or delta_sec >= bucket_sec * limit:
             continue
-        bucket_index = limit - 1 - delta
-        buckets.setdefault(bucket_index, []).append(row)
+        bucket_index = limit - 1 - int(delta_sec // bucket_sec)
+        if 0 <= bucket_index < limit:
+            buckets.setdefault(bucket_index, []).append(row)
 
-    window = []
+    window: list[dict] = []
+    last = _idle_bucket()
     for bucket_index in range(limit):
         bucket_rows = buckets.get(bucket_index, [])
         if bucket_rows:
-            error_count = sum(int(row["error"]) for row in bucket_rows)
-            auth_errors = sum(int(row["auth_error"]) for row in bucket_rows)
-            latency = sum(float(row["latency_ms"]) for row in bucket_rows) / len(bucket_rows)
-            cpu = sum(float(row["cpu_pct"]) for row in bucket_rows) / len(bucket_rows)
-            memory = sum(float(row["memory_mb"]) for row in bucket_rows) / len(bucket_rows)
-            queue = max(float(row["queue_depth"]) for row in bucket_rows)
-            row = {
-                "minute": bucket_index,
-                "error_rate": min(50.0, error_count * 6.5),
-                "latency_ms": min(3000.0, max(8.0, latency)),
-                "cpu_pct": min(16.0, max(0.7, cpu)),
-                "memory_pct": min(0.19, max(0.03, memory / 1024.0)),
-                "queue_depth": min(320.0, queue * 14.0),
-                "auth_error_rate": min(2.5, auth_errors * 0.75),
-            }
-        else:
-            row = {
-                "minute": bucket_index,
-                "error_rate": 0.0,
-                "latency_ms": 18.0,
-                "cpu_pct": 0.9,
-                "memory_pct": 0.03,
-                "queue_depth": 0.0,
-                "auth_error_rate": 0.0,
-            }
-        window.append(row)
+            last = _aggregate_bucket(bucket_rows)
+        entry = {"minute": bucket_index, **last}
+        window.append(entry)
     return window
 
 
@@ -232,9 +300,12 @@ def health() -> dict:
 
 @app.get("/api/faults")
 def get_faults() -> dict:
+    active = current_scenario()
     return {
         "scenarios": list(SCENARIO_PRESETS.keys()),
         "faults": fault_state(),
+        "active_scenario": active,
+        "expected": SCENARIO_EXPECTATION.get(active, {}),
     }
 
 
@@ -336,12 +407,15 @@ def telemetry_summary(limit: int = 120) -> dict:
         for service, faults in fault_state().items()
     }
     active_faults = {service: faults for service, faults in active_faults.items() if faults}
-    non_empty_rows = [row for row in window if row["latency_ms"] > 18.0 or row["error_rate"] > 0.0]
+    non_empty_rows = [row for row in window if row["latency_ms"] > 0.0 or row["error_rate"] > 0.0]
     avg_latency = sum(row["latency_ms"] for row in non_empty_rows) / len(non_empty_rows) if non_empty_rows else 0.0
     avg_cpu = sum(row["cpu_pct"] for row in non_empty_rows) / len(non_empty_rows) if non_empty_rows else 0.0
     error_sum = sum(row["error_rate"] for row in window)
+    scenario = current_scenario()
     return {
         "active_faults": active_faults,
+        "active_scenario": scenario,
+        "expected": SCENARIO_EXPECTATION.get(scenario, {}),
         "request_buckets": len(non_empty_rows),
         "avg_latency_ms": round(avg_latency, 2),
         "avg_cpu_pct": round(avg_cpu, 2),
@@ -353,7 +427,12 @@ def telemetry_summary(limit: int = 120) -> dict:
 
 @app.get("/api/telemetry/window")
 def telemetry_window(limit: int = 120) -> dict:
-    return {"rows": build_window(limit=limit)}
+    scenario = current_scenario()
+    return {
+        "rows": build_window(limit=limit),
+        "active_scenario": scenario,
+        "expected": SCENARIO_EXPECTATION.get(scenario, {}),
+    }
 
 
 @app.get("/api/telemetry/window.csv", response_class=PlainTextResponse)
@@ -387,3 +466,12 @@ def reset_telemetry() -> dict:
         finally:
             conn.close()
     return {"ok": True}
+
+
+@app.get("/api/scenarios/current")
+def get_current_scenario() -> dict:
+    scenario = current_scenario()
+    return {
+        "active_scenario": scenario,
+        "expected": SCENARIO_EXPECTATION.get(scenario, {}),
+    }

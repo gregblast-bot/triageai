@@ -10,6 +10,12 @@ services:
       - faultlab_data:/data
     ports:
       - "8001:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
 
   auth-service:
     build:
@@ -20,7 +26,8 @@ services:
       SERVICE_NAME: auth-service
       CONTROL_BASE_URL: http://control-plane:8000
     depends_on:
-      - control-plane
+      control-plane:
+        condition: service_healthy
 
   catalog-service:
     build:
@@ -31,7 +38,8 @@ services:
       SERVICE_NAME: catalog-service
       CONTROL_BASE_URL: http://control-plane:8000
     depends_on:
-      - control-plane
+      control-plane:
+        condition: service_healthy
 
   cart-service:
     build:
@@ -42,7 +50,8 @@ services:
       SERVICE_NAME: cart-service
       CONTROL_BASE_URL: http://control-plane:8000
     depends_on:
-      - control-plane
+      control-plane:
+        condition: service_healthy
 
   checkout-service:
     build:
@@ -56,10 +65,14 @@ services:
       CART_BASE_URL: http://cart-service:8000
       CATALOG_BASE_URL: http://catalog-service:8000
     depends_on:
-      - control-plane
-      - auth-service
-      - cart-service
-      - catalog-service
+      control-plane:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+      cart-service:
+        condition: service_started
+      catalog-service:
+        condition: service_started
 
   storefront:
     build:
@@ -68,16 +81,22 @@ services:
     command: uvicorn fault_lab.frontend.app:app --host 0.0.0.0 --port 8080
     environment:
       CONTROL_BASE_URL: http://control-plane:8000
+      CONTROL_PUBLIC_URL: http://localhost:8001
       AUTH_BASE_URL: http://auth-service:8000
       CATALOG_BASE_URL: http://catalog-service:8000
       CART_BASE_URL: http://cart-service:8000
       CHECKOUT_BASE_URL: http://checkout-service:8000
     depends_on:
-      - control-plane
-      - auth-service
-      - catalog-service
-      - cart-service
-      - checkout-service
+      control-plane:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+      catalog-service:
+        condition: service_started
+      cart-service:
+        condition: service_started
+      checkout-service:
+        condition: service_started
     ports:
       - "8090:8080"
 

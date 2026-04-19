@@ -37,7 +37,35 @@ FAULT_NOTES = {
         "investigate": "Check memory growth, OOM events, garbage collection pressure, and restart loops.",
         "symptoms": "Growing memory usage followed by service instability, degraded latency, or crashes.",
     },
+    "socket": {
+        "investigate": "Check socket exhaustion, connection pool sizing, half-open sockets, and OS-level ephemeral port pressure.",
+        "symptoms": "Intermittent connection errors, retry spikes, and elevated latency without proportional CPU or memory change.",
+    },
 }
+
+
+_GENERIC_NOTE = {
+    "investigate": "Correlate with recent deploys and traffic shifts, then narrow the blast radius to the most affected service.",
+    "symptoms": "Unusual combination of resource and request metrics compared to healthy baseline.",
+}
+
+
+def _note_for_fault_type(fault_type: str) -> dict:
+    """Return fault-note content for any training label, even one we didn't
+    pre-author. This keeps the retrieved_context relevant regardless of which
+    dataset (RCAEval, synthetic fallback, or a new taxonomy) was used."""
+    if fault_type in FAULT_NOTES:
+        return FAULT_NOTES[fault_type]
+    pretty = fault_type.replace("_", " ")
+    return {
+        "investigate": (
+            f"{_GENERIC_NOTE['investigate']} For `{pretty}`, "
+            "prioritize the service(s) historically implicated in this failure mode."
+        ),
+        "symptoms": (
+            f"{_GENERIC_NOTE['symptoms']} Labeled `{pretty}` in the training corpus."
+        ),
+    }
 
 
 def _top_feature_terms(feature_row: pd.Series, limit: int = 6) -> list[str]:
@@ -63,9 +91,32 @@ def _top_feature_terms(feature_row: pd.Series, limit: int = 6) -> list[str]:
     return terms
 
 
-def _make_fault_documents() -> list[dict]:
+def _make_fault_documents(fault_types: list[str] | None = None) -> list[dict]:
+    """Emit one fault note per training fault type.
+
+    If `fault_types` is given, we cover every label in the actual training
+    data (including those we don't have hand-authored notes for, such as
+    synthetic-fallback names). Otherwise, we fall back to the static
+    `FAULT_NOTES` dictionary.
+    """
+    seen: set[str] = set()
+    keys: list[str] = []
+    source_iter = fault_types if fault_types else list(FAULT_NOTES.keys())
+    for fault_type in source_iter:
+        if not fault_type or fault_type in seen:
+            continue
+        seen.add(fault_type)
+        keys.append(fault_type)
+    # Always include baseline notes so healthy/cpu/etc. stay well covered
+    # even if a narrow dataset excluded them.
+    for fault_type in FAULT_NOTES:
+        if fault_type not in seen:
+            seen.add(fault_type)
+            keys.append(fault_type)
+
     documents = []
-    for fault_type, note in FAULT_NOTES.items():
+    for fault_type in keys:
+        note = _note_for_fault_type(fault_type)
         documents.append(
             {
                 "doc_id": f"fault::{fault_type}",
@@ -137,8 +188,9 @@ def build_knowledge_documents(
     incidents: pd.DataFrame,
     feature_frame: pd.DataFrame,
 ) -> pd.DataFrame:
+    fault_types = sorted({str(f) for f in incidents["fault_type"].unique() if f})
     documents = []
-    documents.extend(_make_fault_documents())
+    documents.extend(_make_fault_documents(fault_types))
     documents.extend(_make_service_documents(incidents))
     documents.extend(_make_incident_documents(incidents, feature_frame))
     return pd.DataFrame(documents)

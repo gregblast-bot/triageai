@@ -92,10 +92,6 @@ def _rng_for_tick(state: dict, action: str, page: str) -> np.random.Generator:
     return np.random.default_rng(seed)
 
 
-def _clip(value: float, low: float, high: float) -> float:
-    return float(min(max(value, low), high))
-
-
 def _base_metrics(state: dict, page: str, action: str) -> dict:
     traffic_multiplier = TRAFFIC_LEVELS[state["traffic_level"]]
     rng = _rng_for_tick(state, action, page)
@@ -248,13 +244,18 @@ def _overlay_scenario(
 
 
 def _finalize_metrics(metrics: dict) -> dict:
+    # Only clamp to physically meaningful lower bounds (nothing negative).
+    # Upper bounds used to collapse the signal for fault scenarios we
+    # explicitly want the model to see (memory leak, queue congestion, ...)
+    # so we remove them. The trained pipeline's StandardScaler handles any
+    # out-of-distribution magnitudes without masking the actual symptom.
     return {
-        "error_rate": _clip(metrics["error_rate"], 0.0, 50.0),
-        "latency_ms": _clip(metrics["latency_ms"], 7.0, 3000.0),
-        "cpu_pct": _clip(metrics["cpu_pct"], 0.7, 16.0),
-        "memory_pct": _clip(metrics["memory_pct"], 0.03, 0.19),
-        "queue_depth": _clip(metrics["queue_depth"], 0.0, 320.0),
-        "auth_error_rate": _clip(metrics["auth_error_rate"], 0.0, 2.5),
+        "error_rate": max(0.0, float(metrics["error_rate"])),
+        "latency_ms": max(0.0, float(metrics["latency_ms"])),
+        "cpu_pct": max(0.0, float(metrics["cpu_pct"])),
+        "memory_pct": max(0.0, float(metrics["memory_pct"])),
+        "queue_depth": max(0.0, float(metrics["queue_depth"])),
+        "auth_error_rate": max(0.0, float(metrics["auth_error_rate"])),
     }
 
 
