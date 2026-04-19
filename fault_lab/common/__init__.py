@@ -1,1 +1,1 @@
-"""Shared helpers for the fault lab stack."""
+"""Config, HTTP helpers, and runtime glue shared across fault-lab services."""

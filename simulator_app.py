@@ -169,8 +169,10 @@ def render_telemetry(state: dict):
 
 @st.cache_data(show_spinner=False)
 def _cached_triage(payload_hash: str, csv_text: str, title: str, description: str) -> dict:
-    # payload_hash just forces Streamlit's cache key to change when any
-    # telemetry sample changes. The heavy work is a full triage pass.
+    """Full triage on exported history; cached so tweaking the UI doesn't rerun inference.
+
+    Streamlit keys the cache off the arguments—payload_hash is a cheap hash of
+    the CSV so any telemetry change misses cache and we recompute."""
     import io
 
     import pandas as pd

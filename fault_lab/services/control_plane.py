@@ -208,14 +208,11 @@ def recent_events(limit: int = 40) -> list[dict]:
 
 
 def _aggregate_bucket(bucket_rows: list[sqlite3.Row]) -> dict:
-    """Aggregate raw telemetry rows for a single bucket without magic clips.
+    """Roll up raw events for one time bucket—no arbitrary caps, just honest averages.
 
-    Units chosen to match training data:
-    - cpu_pct: host-normalized CPU % already emitted by the runtime
-    - memory_pct: GB (emitted as MB by the runtime; converted here)
-    - latency_ms / queue_depth: raw values
-    - error_rate / auth_error_rate: error events per bucket
-    """
+    CPU is already normalized on emit; we turn memory MB into GB here so it lines
+    up with how the model was trained. Latency and queue are as measured; error
+    counts are summed into per-bucket rates."""
     count = len(bucket_rows)
     latency = sum(float(row["latency_ms"]) for row in bucket_rows) / count
     cpu = sum(float(row["cpu_pct"]) for row in bucket_rows) / count
@@ -234,7 +231,7 @@ def _aggregate_bucket(bucket_rows: list[sqlite3.Row]) -> dict:
 
 
 def _idle_bucket() -> dict:
-    """Low-traffic baseline. Used only to seed the forward-fill at the start."""
+    """All zeros—only there so the first bucket has something to compare against before real data shows up."""
     return {
         "error_rate": 0.0,
         "latency_ms": 0.0,
@@ -246,14 +243,12 @@ def _idle_bucket() -> dict:
 
 
 def build_window(limit: int = 120) -> list[dict]:
-    """Build a `limit`-length metric window anchored at "now".
+    """Recent history as a list of buckets ending at now—what TriageAI ingests as a window.
 
-    Buckets are `TELEMETRY_BUCKET_SEC` seconds wide (60s by default) so a
-    120-sample window covers the same ~2h span the training data was built
-    from. Empty buckets forward-fill from the previous bucket instead of
-    reverting to a hardcoded idle baseline, which kept firing false spikes
-    when traffic was bursty.
-    """
+    Bucket width comes from TELEMETRY_BUCKET_SEC (60s by default), so 120 points
+    is roughly the same two-hour feel as the training windows. Gaps repeat the
+    last real bucket instead of snapping back to a fake idle line; the old idle
+    backfill was making bursty traffic look like a bunch of bogus spikes."""
     bucket_sec = max(1.0, float(TELEMETRY_BUCKET_SEC))
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=bucket_sec * limit)
     with db_lock:

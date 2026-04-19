@@ -100,12 +100,10 @@ SCENARIO_PRESETS = {
 }
 
 
-# Expected model predictions per fault-lab scenario. The TriageAI models are
-# trained on RCAEval labels (fault_type in {healthy, cpu, mem, disk, delay,
-# loss, socket}) and RCAEval service names (cartservice, checkoutservice...).
-# This dictionary is the "ground truth" used when the control plane reports
-# what a given scenario *should* produce, so the UI can show expected vs.
-# predicted.
+# Each demo scenario maps to the RCAEval-shaped labels our models actually know.
+# (They were trained on cpu/mem/delay/loss/socket and friends—not "cart-service"
+# strings.) We use this so the admin UI and Streamlit can show "we meant this"
+# next to "the model said that" without pretending the taxonomy matches 1:1.
 SCENARIO_EXPECTATION = {
     "healthy": {"fault_type": "healthy", "root_cause_service": "none"},
     "login_outage": {"fault_type": "loss", "root_cause_service": "adservice"},
@@ -118,11 +116,9 @@ SCENARIO_EXPECTATION = {
     },
 }
 
-# When fault-lab emits telemetry it tags each event with its internal service
-# name (e.g. "cart-service"). The training data uses RCAEval canonical names.
-# This map is applied at the point we need to expose a "predicted service"
-# comparison. It is intentionally a display-only concept; the ML models still
-# see raw internal names only via the text channel.
+# Docker service names (cart-service) vs RCAEval names (cartservice)—same box,
+# different spelling. We only use this when showing humans a side-by-side; the
+# classifiers still read whatever text we put in the incident row.
 FAULT_LAB_SERVICE_ALIAS = {
     "auth-service": "adservice",
     "cart-service": "cartservice",

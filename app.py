@@ -293,7 +293,7 @@ def render_metric_charts(metrics):
 
 
 def _run_live_ingest_triage():
-    """Read sidebar session keys and triage the latest HTTP window."""
+    """Wire up whatever the user typed in the sidebar and run triage on the live pull."""
     base_url = st.session_state.get("live_base_url", DEFAULT_LIVE_CONTROL_PLANE_URL)
     limit = int(st.session_state.get("live_limit", 120))
     title = st.session_state.get("live_incident_title", "Live fault-lab window")

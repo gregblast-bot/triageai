@@ -1,4 +1,6 @@
-"""Smoke test: run the trained pipeline on each test CSV."""
+"""Quick sanity check: point the trained stack at each fixture CSV and see if
+the predicted fault type still matches what we baked into the file. Handy after
+retraining or when you tweak features."""
 from __future__ import annotations
 
 from pathlib import Path

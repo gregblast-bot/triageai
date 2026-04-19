@@ -51,9 +51,11 @@ _GENERIC_NOTE = {
 
 
 def _note_for_fault_type(fault_type: str) -> dict:
-    """Return fault-note content for any training label, even one we didn't
-    pre-author. This keeps the retrieved_context relevant regardless of which
-    dataset (RCAEval, synthetic fallback, or a new taxonomy) was used."""
+    """Hand-tuned notes where we have them; a sensible generic blurb everywhere else.
+
+    Training data doesn't always match our curated list (synthetic runs, new
+    labels, typos in upstream data). Rather than ship empty retrieval text, we
+    still emit something readable tied to that label."""
     if fault_type in FAULT_NOTES:
         return FAULT_NOTES[fault_type]
     pretty = fault_type.replace("_", " ")
@@ -92,13 +94,11 @@ def _top_feature_terms(feature_row: pd.Series, limit: int = 6) -> list[str]:
 
 
 def _make_fault_documents(fault_types: list[str] | None = None) -> list[dict]:
-    """Emit one fault note per training fault type.
+    """One small document per fault label so retrieval has something to grab.
 
-    If `fault_types` is given, we cover every label in the actual training
-    data (including those we don't have hand-authored notes for, such as
-    synthetic-fallback names). Otherwise, we fall back to the static
-    `FAULT_NOTES` dictionary.
-    """
+    Pass the fault types you actually trained on and we'll cover all of them,
+    filling gaps with _note_for_fault_type. If you omit the list, we still walk
+    FAULT_NOTES so the usual cpu/mem/delay set stays in the index."""
     seen: set[str] = set()
     keys: list[str] = []
     source_iter = fault_types if fault_types else list(FAULT_NOTES.keys())

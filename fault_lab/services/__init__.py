@@ -1,1 +1,1 @@
-"""Backend services for the fault lab stack."""
+"""Backend workers—auth, catalog, cart, checkout, and the control plane."""

@@ -1,1 +1,1 @@
-"""Storefront frontend for the fault lab stack."""
+"""FastAPI storefront: pages, admin, and links into the control plane."""

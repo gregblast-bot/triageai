@@ -1,7 +1,8 @@
-"""Regenerate test/test_*.csv using the same scale as the shipped
-data/processed/ (RCAEval-derived). Samples each fault family from the
-training-split windows so the magnitudes match what the model was fit on.
-"""
+"""Rebuild the test/*.csv fixtures from real RCAEval training windows.
+
+We pick one incident per fault family from the Train split so the numbers sit
+where the model actually learned—not hand-tuned toy scales that drift from
+production-ish data."""
 from __future__ import annotations
 
 from pathlib import Path

@@ -17,17 +17,17 @@ def fetch_telemetry_window(
     timeout_sec: float = 10.0,
 ) -> tuple[pd.DataFrame | None, str | None, dict]:
     """
-    Pull the latest aggregated metric window from a fault-lab control plane (or compatible API).
+    Fetch a rolling window of metrics from the fault-lab control plane (anything
+    that speaks the same JSON shape works too).
 
-    Expects GET {base}/api/telemetry/window?limit=N returning JSON:
-        {"rows": [ {...}, ... ],
-         "active_scenario": "...",
-         "expected": {"fault_type": "...", "root_cause_service": "..."}}
-    Each row must include minute and METRIC_COLUMNS fields compatible with TriageAI.
+    The response should look like GET {base}/api/telemetry/window?limit=N with
+    rows plus optional active_scenario and expected labels so the UI can compare
+    "what we injected" against "what the model said." Rows need the usual
+    minute + METRIC_COLUMNS the rest of TriageAI expects.
 
-    Returns a triple of (frame_or_none, error_or_none, meta_dict). The meta
-    dict carries scenario hints when the control plane returns them; callers
-    that just want the old (frame, err) tuple can ignore it.
+    You get (dataframe or None, error string or None, meta dict). Meta is empty
+    on failure; on success it holds whatever the server sent about scenario and
+    expected fault—ignore it if you only care about the frame.
     """
     base = control_plane_base_url.strip().rstrip("/")
     if not base.startswith("http://") and not base.startswith("https://"):

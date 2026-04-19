@@ -35,15 +35,12 @@ def redirect_with_message(path: str, message: str, level: str = "info") -> Redir
 
 
 def ensure_client_id(request: Request, response: object | None = None) -> str:
-    """Return a stable client_id for the incoming request.
+    """Same visitor, same id for the whole request.
 
-    The id is read from the cookie when present; otherwise we mint one and
-    cache it on `request.state` so the *same* id is reused if the caller
-    needs it twice during one request (once to load data, once to set the
-    cookie on the outbound response). Without this caching we used to mint
-    two different ids on a first-time visit, so the cart lookup and the
-    cookie would disagree.
-    """
+    Prefer the cookie; if there isn't one yet, generate once and stash it on
+    request.state. That matters because we sometimes read the id early (cart)
+    and set the cookie late (response)—without the cache we'd accidentally
+    mint two ids on a first visit and the cart wouldn't match what we stored."""
     cached = getattr(request.state, "client_id", None)
     if cached:
         client_id = cached

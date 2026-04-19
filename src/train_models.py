@@ -85,9 +85,10 @@ def build_classifier_pipeline(
 
 def get_param_distributions(classifier_name: str) -> dict:
     """
-    Distributions for RandomizedSearchCV. Use 'classifier__' for the pipeline step
-    named 'classifier'. Grid values for n_estimators override the pipeline's initial
-    RF defaults; class_weight from build_classifier_pipeline is preserved (not tuned).
+    What RandomizedSearchCV should poke at—pipeline params use the usual
+    step__name prefix (here, classifier__…). RF tree counts here replace the
+    pipeline defaults for the search; we leave class_weight alone since that
+    comes from how we built the pipeline, not from the grid.
     """
     if "random_forest" in classifier_name:
         return {
@@ -118,7 +119,10 @@ def _fit_classifier_with_optional_search(
     role: str,
     use_search: bool,
 ) -> tuple[Pipeline, dict | None]:
-    """Fit `pipeline`, optionally via RandomizedSearchCV. Returns (estimator, tuning_meta or None)."""
+    """Train the pipeline plain or with a randomized search, depending on flags.
+
+    Returns the fitted estimator plus a small meta dict from the search when we
+    actually ran one; otherwise None for the second value."""
     if not use_search:
         pipeline.fit(X, y)
         return pipeline, None
