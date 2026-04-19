@@ -38,6 +38,9 @@ METRIC_COLUMNS = [
 
 TEXT_COLUMNS = ["title", "description"]
 
+# Default fault-lab control plane (host port maps from docker: 8001 -> API)
+DEFAULT_LIVE_CONTROL_PLANE_URL = "http://localhost:8001"
+
 
 def get_contamination_rate(anomaly_rate: float) -> float:
     return min(max(float(anomaly_rate), 0.05), 0.35)
