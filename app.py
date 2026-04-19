@@ -9,12 +9,14 @@ import streamlit as st
 
 from src.config import (
     DEFAULT_LIVE_CONTROL_PLANE_URL,
+    EVAL_SUMMARY_PATH,
     FAULT_MODEL_PATH,
     METRIC_COLUMNS,
     ROOT_CAUSE_MODEL_PATH,
 )
 from src.live_telemetry import fetch_telemetry_window
 from src.data import load_incidents, load_metrics
+from src.test_set_eval import evaluate_test_split
 from src.train_models import train_all_models
 from src.triage import clear_caches, models_ready, triage_custom_metrics, triage_incident
 
@@ -139,7 +141,12 @@ def render_mode_selector():
     st.sidebar.header("Input Mode")
     return st.sidebar.radio(
         "Choose data source",
-        options=["Dataset incident", "Upload real incident", "Live ingest (HTTP)"],
+        options=[
+            "Dataset incident",
+            "Upload real incident",
+            "Live ingest (HTTP)",
+            "Test set evaluation (batch)",
+        ],
         index=0,
     )
 
@@ -235,6 +242,19 @@ def render_live_ingest_panel():
         key="live_incident_desc",
         height=100,
     )
+    st.sidebar.slider(
+        "Min anomaly score to show Abnormal",
+        min_value=0.0,
+        max_value=0.4,
+        value=0.05,
+        step=0.01,
+        key="live_anomaly_min",
+        help=(
+            "Models are trained on RCAEval, not fault-lab traffic—benign checkout can look "
+            "like a borderline outlier. Raise this to count light spikes as Normal; use 0 "
+            "for the raw IsolationForest decision only."
+        ),
+    )
     return refresh_mode
 
 
@@ -284,6 +304,11 @@ def render_live_ingest_overview(
         "Telemetry is polled from the control plane API (not uploaded CSV). "
         "Run `docker compose -f fault_lab/docker-compose.yml up` and generate traffic in the storefront."
     )
+    st.caption(
+        "**Healthy scenario** means fault-lab is not injecting scripted faults—it does not guarantee "
+        "the ML pipeline will say “Normal,” because metrics still differ from RCAEval training data. "
+        "Use the sidebar **Min anomaly score** slider to separate borderline spikes from clear incidents."
+    )
 
 
 def render_metric_charts(metrics):
@@ -304,11 +329,13 @@ def _run_live_ingest_triage():
         return None
     render_live_ingest_overview(title, description, base_url, meta=meta)
     render_metric_charts(metrics_df)
+    min_score = float(st.session_state.get("live_anomaly_min", 0.05))
     result = triage_custom_metrics(
         metrics_df,
         title=title,
         description=description,
         incident_id="LIVE-HTTP-001",
+        anomaly_flag_min_score=min_score,
     )
     result["expected"] = meta.get("expected") or {}
     result["active_scenario"] = meta.get("active_scenario")
@@ -317,6 +344,12 @@ def _run_live_ingest_triage():
 
 def render_triage_output(result):
     st.subheader("Triage output")
+    raw = result.get("unusual_raw")
+    if raw is not None and raw != result["unusual"]:
+        st.caption(
+            "Isolation Forest flagged this window as an outlier, but the anomaly score is below "
+            f"your minimum ({result.get('anomaly_flag_min_score', 0):.2f}) — **showing Normal** for the demo."
+        )
     col1, col2, col3 = st.columns(3)
     col1.metric("Anomaly flag", "Abnormal" if result["unusual"] else "Normal")
     col2.metric("Fault prediction", result["predicted_fault_type"])
@@ -328,17 +361,31 @@ def render_triage_output(result):
         expected_service = expected.get("root_cause_service", "unknown")
         fault_match = expected_fault == result["predicted_fault_type"]
         service_match = expected_service == result["predicted_root_cause_service"]
-        msg = (
-            f"Expected fault: `{expected_fault}` "
-            f"(predicted `{result['predicted_fault_type']}` — "
-            f"{'match' if fault_match else 'mismatch'}).  \n"
-            f"Expected service: `{expected_service}` "
-            f"(predicted `{result['predicted_root_cause_service']}` — "
-            f"{'match' if service_match else 'mismatch'})."
-        )
-        if fault_match and service_match:
+        has_truth_anomaly = "is_anomalous" in expected
+        if has_truth_anomaly:
+            truth_anom = bool(expected["is_anomalous"])
+            pred_anom = bool(result["unusual"])
+            anomaly_match = truth_anom == pred_anom
+        else:
+            anomaly_match = True  # N/A for live-ingest scenario-only labels
+        msg_parts = [
+            f"Labeled fault: `{expected_fault}` → predicted `{result['predicted_fault_type']}` "
+            f"({'match' if fault_match else 'mismatch'})",
+            f"Labeled service: `{expected_service}` → predicted `{result['predicted_root_cause_service']}` "
+            f"({'match' if service_match else 'mismatch'})",
+        ]
+        if has_truth_anomaly:
+            msg_parts.insert(
+                0,
+                f"Labeled anomaly: `{'Abnormal' if truth_anom else 'Normal'}` → "
+                f"predicted `{'Abnormal' if pred_anom else 'Normal'}` "
+                f"({'match' if anomaly_match else 'mismatch'})",
+            )
+        msg = "  \n".join(msg_parts)
+        matches = [anomaly_match, fault_match, service_match] if has_truth_anomaly else [fault_match, service_match]
+        if all(matches):
             st.success(msg)
-        elif fault_match or service_match:
+        elif any(matches):
             st.warning(msg)
         else:
             st.error(msg)
@@ -379,6 +426,140 @@ def render_triage_output(result):
             st.write(item["content"])
 
 
+def render_test_set_evaluation():
+    st.subheader("Test split — batch evaluation")
+    st.caption(
+        "Scores every **Test** row using the **saved** models in `models/` (same inference as Dataset incident, "
+        "RAG skipped for speed). Compares predictions to labels in `data/processed/incidents.csv`."
+    )
+    st.slider(
+        "Min anomaly score to count as Abnormal",
+        min_value=0.0,
+        max_value=0.4,
+        value=0.0,
+        step=0.01,
+        key="batch_anomaly_min",
+        help="Aligned with triage: outlier must clear this score to be labeled Abnormal.",
+    )
+
+    if st.button("Run evaluation on Test split", type="primary", key="batch_eval_btn"):
+        with st.spinner("Running deployed models on all Test incidents..."):
+            try:
+                min_s = float(st.session_state.get("batch_anomaly_min", 0.0))
+                df, metrics = evaluate_test_split(anomaly_flag_min_score=min_s)
+                st.session_state["batch_eval_df"] = df
+                st.session_state["batch_eval_metrics"] = metrics
+            except ValueError as exc:
+                st.error(str(exc))
+            except RuntimeError as exc:
+                st.error(str(exc))
+
+    if "batch_eval_metrics" not in st.session_state:
+        st.info("Click **Run evaluation on Test split** to compute metrics, charts, and per-incident results.")
+        if EVAL_SUMMARY_PATH.exists():
+            st.caption(
+                f"Optional: `{EVAL_SUMMARY_PATH.name}` from `python -m src.eval` compares **retrained** "
+                "classifier families on a holdout split — different from the deployed-model table below."
+            )
+        return
+
+    metrics = st.session_state["batch_eval_metrics"]
+    df = st.session_state["batch_eval_df"]
+
+    st.markdown("##### Aggregate metrics (deployed models, Test split)")
+    mcols = st.columns(4)
+    mcols[0].metric("Test incidents", metrics["n_test"])
+    mcols[1].metric("Fault accuracy", f"{metrics['fault_accuracy']:.3f}")
+    mcols[2].metric("Root-cause accuracy", f"{metrics['root_cause_accuracy']:.3f}")
+    mcols[3].metric("Anomaly F1", f"{metrics['anomaly_f1']:.3f}")
+
+    mcols2 = st.columns(4)
+    mcols2[0].metric("Fault macro-F1", f"{metrics['fault_macro_f1']:.3f}")
+    mcols2[1].metric("Root macro-F1", f"{metrics['root_cause_macro_f1']:.3f}")
+    mcols2[2].metric("Anomaly precision", f"{metrics['anomaly_precision']:.3f}")
+    mcols2[3].metric("Anomaly recall", f"{metrics['anomaly_recall']:.3f}")
+
+    with st.expander("Raw metric JSON", expanded=False):
+        st.json(metrics)
+
+    st.markdown("##### Correct vs wrong (counts)")
+    chart_df = pd.DataFrame(
+        {
+            "Correct": [
+                metrics["fault_correct_count"],
+                metrics["root_correct_count"],
+                metrics["anomaly_correct_count"],
+            ],
+            "Wrong": [
+                metrics["fault_wrong_count"],
+                metrics["root_wrong_count"],
+                metrics["anomaly_wrong_count"],
+            ],
+        },
+        index=["Fault type", "Root cause", "Anomaly flag"],
+    )
+    st.bar_chart(chart_df)
+
+    wrong_fault = df[~df["fault_correct"]].copy()
+    wrong_root = df[~df["root_correct"]].copy()
+    wrong_anom = df[~df["anomaly_correct"]].copy()
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown("**Fault mismatches**")
+        st.caption(f"{len(wrong_fault)} incidents")
+        if not wrong_fault.empty:
+            st.dataframe(
+                wrong_fault[
+                    ["incident_id", "true_fault_type", "pred_fault_type", "fault_confidence"]
+                ],
+                use_container_width=True,
+                height=200,
+            )
+    with c2:
+        st.markdown("**Root-cause mismatches**")
+        st.caption(f"{len(wrong_root)} incidents")
+        if not wrong_root.empty:
+            st.dataframe(
+                wrong_root[
+                    [
+                        "incident_id",
+                        "true_root_cause_service",
+                        "pred_root_cause_service",
+                        "root_confidence",
+                    ]
+                ],
+                use_container_width=True,
+                height=200,
+            )
+    with c3:
+        st.markdown("**Anomaly mismatches**")
+        st.caption(f"{len(wrong_anom)} incidents")
+        if not wrong_anom.empty:
+            st.dataframe(
+                wrong_anom[
+                    [
+                        "incident_id",
+                        "true_anomalous",
+                        "pred_anomalous",
+                        "anomaly_score",
+                    ]
+                ],
+                use_container_width=True,
+                height=200,
+            )
+
+    st.markdown("##### All Test incidents (full table)")
+    st.dataframe(df, use_container_width=True, height=400)
+    csv_bytes = df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download predictions CSV",
+        data=csv_bytes,
+        file_name="test_set_predictions.csv",
+        mime="text/csv",
+    )
+
+
 def main():
     render_header()
     mode = render_mode_selector()
@@ -395,6 +576,12 @@ def main():
         incident = incidents.loc[incidents["incident_id"] == incident_id].iloc[0]
         incident_metrics = metrics.loc[metrics["incident_id"] == incident_id].copy()
         result = triage_incident(incident_id)
+        # Ground truth from the dataset (Train or Test) — drives match/mismatch in triage output.
+        result["expected"] = {
+            "fault_type": incident["fault_type"],
+            "root_cause_service": incident["root_cause_service"],
+            "is_anomalous": bool(incident["is_anomalous"]),
+        }
 
         render_incident_overview(incident)
         render_metric_charts(incident_metrics)
@@ -425,6 +612,10 @@ def main():
                 "Tip: start fault_lab (`docker compose -f fault_lab/docker-compose.yml up`), "
                 "then browse the storefront."
             )
+        return
+
+    if mode == "Test set evaluation (batch)":
+        render_test_set_evaluation()
         return
 
     title, description, uploaded_file = render_upload_panel()

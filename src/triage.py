@@ -55,6 +55,8 @@ def _run_models_for_feature_row(
     *,
     incident_id: str,
     similar_k: int = 3,
+    anomaly_flag_min_score: float = 0.0,
+    skip_similarity_and_rag: bool = False,
 ) -> dict:
     if not models_ready():
         raise RuntimeError(
@@ -66,26 +68,55 @@ def _run_models_for_feature_row(
     root_cause_bundle = _load_bundle(ROOT_CAUSE_MODEL_PATH, "root_cause")
     similarity_bundle = _load_bundle(SIMILARITY_INDEX_PATH, "similarity")
 
-    numeric_columns = anomaly_bundle["numeric_columns"]
+    anomaly_numeric_columns = anomaly_bundle["numeric_columns"]
+    fault_numeric_columns = fault_bundle["numeric_columns"]
+    root_numeric_columns = root_cause_bundle["numeric_columns"]
     anomaly_model = anomaly_bundle["model"]
     fault_model = fault_bundle["model"]
     root_cause_model = root_cause_bundle["model"]
 
-    anomaly_score = float(-anomaly_model.decision_function(incident_row[numeric_columns])[0])
-    unusual = bool(anomaly_model.predict(incident_row[numeric_columns])[0] == -1)
+    anomaly_score = float(-anomaly_model.decision_function(incident_row[anomaly_numeric_columns])[0])
+    unusual_raw = bool(anomaly_model.predict(incident_row[anomaly_numeric_columns])[0] == -1)
+    floor = max(0.0, float(anomaly_flag_min_score))
+    # Higher anomaly_score => more outlier-like (see sklearn IsolationForest decision_function sign).
+    unusual = bool(unusual_raw and anomaly_score >= floor)
 
-    fault_probabilities = fault_model.predict_proba(incident_row[numeric_columns + ["text"]])[0]
+    # If the classifiers were trained with an anomaly-score feature, inject it
+    # now so the feature shape matches what the pipeline expects.
+    incident_row = incident_row.copy()
+    if "anom_score" in fault_numeric_columns or "anom_score" in root_numeric_columns:
+        incident_row["anom_score"] = anomaly_score
+
+    fault_probabilities = fault_model.predict_proba(incident_row[fault_numeric_columns + ["text"]])[0]
     fault_classes = fault_model.classes_
     fault_index = int(fault_probabilities.argmax())
 
-    root_probabilities = root_cause_model.predict_proba(incident_row[numeric_columns + ["text"]])[0]
+    root_probabilities = root_cause_model.predict_proba(incident_row[root_numeric_columns + ["text"]])[0]
     root_classes = root_cause_model.classes_
     root_index = int(root_probabilities.argmax())
+
+    result = {
+        "incident_id": incident_id,
+        "unusual": unusual,
+        "unusual_raw": unusual_raw,
+        "anomaly_flag_min_score": floor,
+        "anomaly_score": anomaly_score,
+        "predicted_fault_type": str(fault_classes[fault_index]),
+        "fault_confidence": float(fault_probabilities[fault_index]),
+        "predicted_root_cause_service": str(root_classes[root_index]),
+        "root_cause_confidence": float(root_probabilities[root_index]),
+    }
+
+    if skip_similarity_and_rag:
+        result["top_similar_incidents"] = []
+        result["retrieved_context"] = {}
+        return result
 
     scaler = similarity_bundle["scaler"]
     matrix = similarity_bundle["matrix"]
     similarity_numeric_columns = similarity_bundle["numeric_columns"]
     metadata = similarity_bundle["metadata"]
+    # Similarity index was built on the base numeric columns (no anom_score).
     query_vector = scaler.transform(incident_row[similarity_numeric_columns])
     scores = cosine_similarity(query_vector, matrix).flatten()
     ranked_indices = scores.argsort()[::-1]
@@ -106,16 +137,7 @@ def _run_models_for_feature_row(
         if len(similar_incidents) >= similar_k:
             break
 
-    result = {
-        "incident_id": incident_id,
-        "unusual": unusual,
-        "anomaly_score": anomaly_score,
-        "predicted_fault_type": str(fault_classes[fault_index]),
-        "fault_confidence": float(fault_probabilities[fault_index]),
-        "predicted_root_cause_service": str(root_classes[root_index]),
-        "root_cause_confidence": float(root_probabilities[root_index]),
-        "top_similar_incidents": similar_incidents,
-    }
+    result["top_similar_incidents"] = similar_incidents
     rag_context = retrieve_context(incident_row.iloc[0], result)
     result["retrieved_context"] = rag_context
     return result
@@ -136,6 +158,7 @@ def triage_custom_metrics(
     description: str = "Custom metric window uploaded from an external application.",
     incident_id: str = "CUSTOM-REAL-001",
     similar_k: int = 3,
+    anomaly_flag_min_score: float = 0.0,
 ) -> dict:
     text = f"{title} {description}".strip()
     feature_row = build_feature_row(
@@ -147,7 +170,12 @@ def triage_custom_metrics(
         is_anomalous=False,
     )
     feature_frame = pd.DataFrame([feature_row])
-    return _run_models_for_feature_row(feature_frame, incident_id=incident_id, similar_k=similar_k)
+    return _run_models_for_feature_row(
+        feature_frame,
+        incident_id=incident_id,
+        similar_k=similar_k,
+        anomaly_flag_min_score=anomaly_flag_min_score,
+    )
 
 
 if __name__ == "__main__":
