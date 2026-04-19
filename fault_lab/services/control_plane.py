@@ -3,11 +3,14 @@ from __future__ import annotations
 import csv
 import io
 import sqlite3
+import statistics
 import threading
 from collections.abc import AsyncGenerator
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
+import psutil
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
@@ -52,6 +55,10 @@ class TelemetryEvent(BaseModel):
     queue_depth: float
     error: bool
     auth_error: bool = False
+    # Extras the newer runtimes emit. Defaulting to zero keeps old services
+    # that don't know about these fields working without changes.
+    disk_io_bytes: float = 0.0
+    socket_count: float = 0.0
 
 
 def utc_now() -> str:
@@ -91,7 +98,9 @@ def init_db() -> None:
                     memory_mb REAL NOT NULL,
                     queue_depth REAL NOT NULL,
                     error INTEGER NOT NULL,
-                    auth_error INTEGER NOT NULL
+                    auth_error INTEGER NOT NULL,
+                    disk_io_bytes REAL NOT NULL DEFAULT 0,
+                    socket_count REAL NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS scenario_state (
@@ -101,6 +110,20 @@ def init_db() -> None:
                 );
                 """
             )
+            # Add the new columns if the table was created before we added
+            # them. This way an upgrade doesn't throw away existing demo data.
+            existing_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(telemetry_events)").fetchall()
+            }
+            for column_name, definition in (
+                ("disk_io_bytes", "REAL NOT NULL DEFAULT 0"),
+                ("socket_count", "REAL NOT NULL DEFAULT 0"),
+            ):
+                if column_name not in existing_columns:
+                    conn.execute(
+                        f"ALTER TABLE telemetry_events ADD COLUMN {column_name} {definition}"
+                    )
             conn.execute(
                 """
                 INSERT OR IGNORE INTO scenario_state (id, scenario, updated_at)
@@ -207,26 +230,82 @@ def recent_events(limit: int = 40) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def _aggregate_bucket(bucket_rows: list[sqlite3.Row]) -> dict:
-    """Roll up raw events for one time bucket—no arbitrary caps, just honest averages.
+def _percentile(values: list[float], pct: float) -> float:
+    """Tiny percentile helper. `statistics.quantiles` is a bit much for a
+    single point and refuses to run with fewer than two samples, which we
+    hit all the time on sparse buckets."""
+    if not values:
+        return 0.0
+    if len(values) == 1:
+        return float(values[0])
+    ordered = sorted(values)
+    rank = min(len(ordered) - 1, max(0, int(round((pct / 100.0) * (len(ordered) - 1)))))
+    return float(ordered[rank])
 
-    CPU is already normalized on emit; we turn memory MB into GB here so it lines
-    up with how the model was trained. Latency and queue are as measured; error
-    counts are summed into per-bucket rates."""
+
+def _per_service_means(bucket_rows: list[sqlite3.Row], field: str) -> list[float]:
+    """Average `field` within each service for this bucket."""
+    grouped: dict[str, list[float]] = defaultdict(list)
+    for row in bucket_rows:
+        grouped[row["service"]].append(float(row[field]))
+    return [sum(values) / len(values) for values in grouped.values() if values]
+
+
+def _top_service_delta(bucket_rows: list[sqlite3.Row], field: str, scale: float = 1.0) -> float:
+    """Gap between the hottest service and the cross-service mean. If there's
+    only one service in the bucket there's no spread to talk about, so return
+    zero."""
+    means = _per_service_means(bucket_rows, field)
+    if len(means) < 2:
+        return 0.0
+    peak = max(means)
+    overall = sum(means) / len(means)
+    return (peak - overall) * scale
+
+
+def _aggregate_bucket(bucket_rows: list[sqlite3.Row]) -> dict:
+    """Roll up raw events for one bucket. No arbitrary caps, just honest
+    averages.
+
+    CPU is already normalized when we emit, so we just pass it through. Memory
+    gets turned into GB because that's what the model was trained on. Latency
+    keeps p90 as the headline value (to match RCAEval) but we also expose p50
+    so the classifier can see how much the tail is dragging. The per-service
+    deltas are the "one service is hot" feature root-cause cares about."""
     count = len(bucket_rows)
-    latency = sum(float(row["latency_ms"]) for row in bucket_rows) / count
+    latencies = [float(row["latency_ms"]) for row in bucket_rows]
+    latency_p90 = _percentile(latencies, 90.0)
+    latency_p50 = _percentile(latencies, 50.0)
     cpu = sum(float(row["cpu_pct"]) for row in bucket_rows) / count
     memory_mb = sum(float(row["memory_mb"]) for row in bucket_rows) / count
     queue = max(float(row["queue_depth"]) for row in bucket_rows)
     error_count = sum(int(row["error"]) for row in bucket_rows)
     auth_errors = sum(int(row["auth_error"]) for row in bucket_rows)
+    disk_io = sum(float(row["disk_io_bytes"]) for row in bucket_rows) / count
+    sockets = sum(float(row["socket_count"]) for row in bucket_rows) / count
+    # Load average is host-wide, not per-bucket, so we just read it once.
+    try:
+        load_avg = float(psutil.getloadavg()[0])
+    except (OSError, AttributeError):
+        load_avg = 0.0
+
     return {
         "error_rate": float(error_count),
-        "latency_ms": float(latency),
+        "latency_ms": float(latency_p90),
         "cpu_pct": float(cpu),
         "memory_pct": float(memory_mb / 1024.0),
         "queue_depth": float(queue),
         "auth_error_rate": float(auth_errors),
+        "latency_p50_ms": float(latency_p50),
+        "load_avg": float(load_avg),
+        "disk_io": float(disk_io),
+        "socket_count": float(sockets),
+        "cpu_top_service_delta": _top_service_delta(bucket_rows, "cpu_pct"),
+        "mem_top_service_delta": _top_service_delta(
+            bucket_rows, "memory_mb", scale=1 / 1024.0
+        ),
+        "error_top_service_delta": _top_service_delta(bucket_rows, "error"),
+        "latency_top_service_delta": _top_service_delta(bucket_rows, "latency_ms"),
     }
 
 
@@ -239,6 +318,14 @@ def _idle_bucket() -> dict:
         "memory_pct": 0.0,
         "queue_depth": 0.0,
         "auth_error_rate": 0.0,
+        "latency_p50_ms": 0.0,
+        "load_avg": 0.0,
+        "disk_io": 0.0,
+        "socket_count": 0.0,
+        "cpu_top_service_delta": 0.0,
+        "mem_top_service_delta": 0.0,
+        "error_top_service_delta": 0.0,
+        "latency_top_service_delta": 0.0,
     }
 
 
@@ -256,7 +343,8 @@ def build_window(limit: int = 120) -> list[dict]:
         try:
             rows = conn.execute(
                 """
-                SELECT created_at, latency_ms, cpu_pct, memory_mb, queue_depth, error, auth_error
+                SELECT created_at, service, latency_ms, cpu_pct, memory_mb, queue_depth,
+                       error, auth_error, disk_io_bytes, socket_count
                 FROM telemetry_events
                 WHERE created_at >= ?
                 ORDER BY created_at ASC
@@ -366,9 +454,10 @@ def ingest_telemetry(event: TelemetryEvent) -> dict:
                 """
                 INSERT INTO telemetry_events (
                     created_at, service, path, status_code, latency_ms, cpu_pct,
-                    memory_mb, queue_depth, error, auth_error
+                    memory_mb, queue_depth, error, auth_error,
+                    disk_io_bytes, socket_count
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     utc_now(),
@@ -381,6 +470,8 @@ def ingest_telemetry(event: TelemetryEvent) -> dict:
                     float(event.queue_depth),
                     1 if event.error else 0,
                     1 if event.auth_error else 0,
+                    float(event.disk_io_bytes),
+                    float(event.socket_count),
                 ),
             )
             conn.commit()
@@ -444,6 +535,14 @@ def telemetry_window_csv(limit: int = 120) -> str:
             "memory_pct",
             "queue_depth",
             "auth_error_rate",
+            "latency_p50_ms",
+            "load_avg",
+            "disk_io",
+            "socket_count",
+            "cpu_top_service_delta",
+            "mem_top_service_delta",
+            "error_top_service_delta",
+            "latency_top_service_delta",
         ],
     )
     writer.writeheader()

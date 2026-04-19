@@ -7,7 +7,7 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 
-from .config import METRIC_COLUMNS
+from .config import METRIC_COLUMNS, OPTIONAL_METRIC_COLUMNS, PRECOMPUTED_SCALAR_FEATURES
 
 
 def fetch_telemetry_window(
@@ -72,6 +72,24 @@ def fetch_telemetry_window(
 
     for col in METRIC_COLUMNS:
         frame[col] = pd.to_numeric(frame[col], errors="coerce").fillna(0.0)
+    # Newer control planes send these extras too. Default to zero if we're
+    # talking to an older one so the feature shape stays consistent.
+    for col in OPTIONAL_METRIC_COLUMNS:
+        if col in frame.columns:
+            frame[col] = pd.to_numeric(frame[col], errors="coerce").fillna(0.0)
+        else:
+            frame[col] = 0.0
     frame["minute"] = pd.to_numeric(frame["minute"], errors="coerce").fillna(0).astype(int)
+
+    # Per-service deltas come through as per-bucket scalars. Take the max
+    # across the window before handing them off; the worst moment of "one
+    # service is way hotter than the rest" is the bit the classifier needs.
+    scalars: dict[str, float] = {}
+    for col in PRECOMPUTED_SCALAR_FEATURES:
+        if col in frame.columns:
+            frame[col] = pd.to_numeric(frame[col], errors="coerce").fillna(0.0)
+            scalars[col] = float(frame[col].max())
+    if scalars:
+        meta["precomputed_scalars"] = scalars
 
     return frame, None, meta

@@ -36,6 +36,27 @@ METRIC_COLUMNS = [
     "auth_error_rate",
 ]
 
+# Extra per-minute families that both the RCAEval converter and the fault-lab
+# control plane emit. Older feeds won't have them, and that's fine:
+# build_feature_row just fills in zeros.
+OPTIONAL_METRIC_COLUMNS = [
+    "latency_p50_ms",
+    "load_avg",
+    "disk_io",
+    "socket_count",
+]
+
+# Per-window scalars computed upstream (in the data converter for training, or
+# in the control plane aggregator for live windows). They're the "one service
+# is hot" signal that gets averaged away when we mash per-service metrics into
+# the minute-level columns above, which is usually where root-cause info lives.
+PRECOMPUTED_SCALAR_FEATURES = [
+    "cpu_top_service_delta",
+    "mem_top_service_delta",
+    "error_top_service_delta",
+    "latency_top_service_delta",
+]
+
 TEXT_COLUMNS = ["title", "description"]
 
 # Default fault-lab control plane (host port maps from docker: 8001 -> API)

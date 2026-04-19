@@ -30,6 +30,13 @@ COLUMNS = [
     "memory_pct",
     "queue_depth",
     "auth_error_rate",
+    # Newer columns. They're populated when the source collection had the
+    # data, and zero otherwise. Keeping them in the fixture makes the smoke
+    # test match what live fault-lab actually sends these days.
+    "latency_p50_ms",
+    "load_avg",
+    "disk_io",
+    "socket_count",
 ]
 
 
@@ -45,6 +52,11 @@ def main() -> None:
         iid = candidates.iloc[0]["incident_id"]
         window = metrics[metrics["incident_id"] == iid].copy()
         window = window.sort_values("minute").reset_index(drop=True)
+        # Keep the column set stable even when the source CSV didn't have
+        # one of the newer families. Anything missing falls back to zero.
+        for column in COLUMNS:
+            if column not in window.columns:
+                window[column] = 0.0
         window = window[COLUMNS].round(4)
         out_path = OUT / filename
         window.to_csv(out_path, index=False)

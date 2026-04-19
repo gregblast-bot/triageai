@@ -159,6 +159,7 @@ def triage_custom_metrics(
     incident_id: str = "CUSTOM-REAL-001",
     similar_k: int = 3,
     anomaly_flag_min_score: float = 0.0,
+    precomputed_scalars: dict[str, float] | None = None,
 ) -> dict:
     text = f"{title} {description}".strip()
     feature_row = build_feature_row(
@@ -168,6 +169,7 @@ def triage_custom_metrics(
         fault_type="unlabeled",
         root_cause_service="unlabeled",
         is_anomalous=False,
+        precomputed_scalars=precomputed_scalars,
     )
     feature_frame = pd.DataFrame([feature_row])
     return _run_models_for_feature_row(

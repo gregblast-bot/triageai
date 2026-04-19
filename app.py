@@ -336,6 +336,7 @@ def _run_live_ingest_triage():
         description=description,
         incident_id="LIVE-HTTP-001",
         anomaly_flag_min_score=min_score,
+        precomputed_scalars=meta.get("precomputed_scalars"),
     )
     result["expected"] = meta.get("expected") or {}
     result["active_scenario"] = meta.get("active_scenario")
