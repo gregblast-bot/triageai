@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import joblib
@@ -8,9 +9,9 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import IsolationForest, RandomForestClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import GridSearchCV
 
 from .config import (
     ANOMALY_MODEL_PATH,
@@ -24,6 +25,7 @@ from .data import load_incidents, load_metrics
 from .features import build_feature_frame, get_numeric_feature_columns
 from .rag import build_rag_index
 
+logger = logging.getLogger(__name__)
 
 SUPPORTED_CLASSIFIERS = (
     "random_forest",
@@ -31,6 +33,10 @@ SUPPORTED_CLASSIFIERS = (
     "random_forest_balanced_subsample",
     "logistic_regression",
 )
+
+# Randomized search samples this many distinct hyperparameter configs (3-fold CV each).
+RANDOM_SEARCH_N_ITER = 40
+RANDOM_SEARCH_CV = 3
 
 
 def build_classifier_pipeline(
@@ -77,6 +83,84 @@ def build_classifier_pipeline(
     )
 
 
+def get_param_distributions(classifier_name: str) -> dict:
+    """
+    Distributions for RandomizedSearchCV. Use 'classifier__' for the pipeline step
+    named 'classifier'. Grid values for n_estimators override the pipeline's initial
+    RF defaults; class_weight from build_classifier_pipeline is preserved (not tuned).
+    """
+    if "random_forest" in classifier_name:
+        return {
+            "classifier__n_estimators": [250, 400, 500],
+            "classifier__max_depth": [10, 20, None],
+            "classifier__max_features": ["sqrt", "log2"],
+            "classifier__min_samples_split": [2, 5],
+            "preprocessor__text__max_features": [200, 400, 600],
+            "preprocessor__text__ngram_range": [(1, 1), (1, 2)],
+            "preprocessor__text__use_idf": [True, False],
+        }
+
+    if classifier_name == "logistic_regression":
+        return {
+            "classifier__C": [0.01, 0.1, 1.0, 10.0],
+            "classifier__penalty": ["l1", "l2"],
+            "preprocessor__text__max_features": [400, 600],
+        }
+    return {}
+
+
+def _fit_classifier_with_optional_search(
+    pipeline: Pipeline,
+    classifier_name: str,
+    X: pd.DataFrame,
+    y: pd.Series,
+    *,
+    role: str,
+    use_search: bool,
+) -> tuple[Pipeline, dict | None]:
+    """Fit `pipeline`, optionally via RandomizedSearchCV. Returns (estimator, tuning_meta or None)."""
+    if not use_search:
+        pipeline.fit(X, y)
+        return pipeline, None
+
+    param_distributions = get_param_distributions(classifier_name)
+    if not param_distributions:
+        pipeline.fit(X, y)
+        return pipeline, None
+
+    search = RandomizedSearchCV(
+        pipeline,
+        param_distributions=param_distributions,
+        n_iter=RANDOM_SEARCH_N_ITER,
+        cv=RANDOM_SEARCH_CV,
+        scoring="f1_weighted",
+        n_jobs=-1,
+        random_state=42,
+        refit=True,
+    )
+    try:
+        search.fit(X, y)
+    except (ValueError, MemoryError):
+        logger.warning("%s classifier: hyperparameter search failed; using default fit", role, exc_info=True)
+        pipeline.fit(X, y)
+        return pipeline, {"search_failed": True, "error": "search_raised"}
+    except Exception:
+        logger.exception("%s classifier: unexpected error during search; using default fit", role)
+        pipeline.fit(X, y)
+        return pipeline, {"search_failed": True, "error": "unexpected"}
+
+    logger.info(
+        "%s classifier best CV score=%.4f params=%s",
+        role,
+        float(search.best_score_),
+        search.best_params_,
+    )
+    return search.best_estimator_, {
+        "best_params": search.best_params_,
+        "best_cv_score": float(search.best_score_),
+    }
+
+
 def _fit_similarity_index(feature_frame: pd.DataFrame, numeric_columns: list[str]) -> dict:
     scaler = StandardScaler()
     matrix = scaler.fit_transform(feature_frame[numeric_columns])
@@ -90,38 +174,11 @@ def _fit_similarity_index(feature_frame: pd.DataFrame, numeric_columns: list[str
     }
 
 
-def get_param_grid(classifier_name: str) -> dict:
-    """
-    Returns parameter grids. Use 'classifier__' prefix to target the 
-    pipeline step named 'classifier'.
-    """
-    if "random_forest" in classifier_name:
-        return {
-            # Random Forest Tuning
-            'classifier__n_estimators': [250, 500],
-            'classifier__max_depth': [10, 20, None],
-            'classifier__max_features': ['sqrt', 'log2'],
-            'classifier__min_samples_split': [2, 5],
-            
-            # TF-IDF Tuning (reaching into the ColumnTransformer)
-            'preprocessor__text__max_features': [200, 400, 600],
-            'preprocessor__text__ngram_range': [(1, 1), (1, 2)],
-            'preprocessor__text__use_idf': [True, False]
-        }
-        
-    elif classifier_name == "logistic_regression":
-        return {
-            'classifier__C': [0.01, 0.1, 1.0, 10.0],
-            'classifier__penalty': ['l1', 'l2'],
-            'preprocessor__text__max_features': [400, 600]
-        }
-    return {}
-
-
 def train_all_models(
     fault_classifier_name: str = "random_forest_balanced_subsample",
     root_cause_classifier_name: str = "random_forest_balanced_subsample",
-    use_grid_search: bool = True
+    *,
+    use_grid_search: bool = False,
 ) -> dict:
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -143,43 +200,27 @@ def train_all_models(
     )
     anomaly_model.fit(training_frame[numeric_columns])
 
-    fault_model = build_classifier_pipeline(numeric_columns, fault_classifier_name)
-    if use_grid_search:
-        fault_search = GridSearchCV(
-            fault_model, 
-            get_param_grid(fault_classifier_name), 
-            cv=3, 
-            n_jobs=-1, 
-            scoring='f1_weighted'
-        )
-        try:
-            fault_search.fit(training_frame[numeric_columns + ["text"]], training_frame["fault_type"])
-            fault_model = fault_search.best_estimator_
-            print(f"Best Fault Params: {fault_search.best_params_}")
-        except Exception as e:
-            print(f"GridSearch failed: {e}")
-            fault_model = fault_model.fit(training_frame[numeric_columns + ["text"]], training_frame["fault_type"])
-    else:
-        fault_model.fit(training_frame[numeric_columns + ["text"]], training_frame["fault_type"])
+    X = training_frame[numeric_columns + ["text"]]
 
-    root_cause_model = build_classifier_pipeline(numeric_columns, root_cause_classifier_name)
-    if use_grid_search:
-        root_cause_search = GridSearchCV(
-            root_cause_model, 
-            get_param_grid(root_cause_classifier_name), 
-            cv=3, 
-            n_jobs=-1, 
-            scoring='f1_weighted'
-        )
-        try:
-            root_cause_search.fit(training_frame[numeric_columns + ["text"]], training_frame["root_cause_service"])
-            root_cause_model = root_cause_search.best_estimator_
-            print(f"Best Root Cause Params: {root_cause_search.best_params_}")
-        except Exception as e:
-            print(f"GridSearch failed: {e}")
-            root_cause_model = root_cause_model.fit(training_frame[numeric_columns + ["text"]], training_frame["root_cause_service"])
-    else:
-        root_cause_model.fit(training_frame[numeric_columns + ["text"]], training_frame["root_cause_service"])
+    fault_pipeline = build_classifier_pipeline(numeric_columns, fault_classifier_name)
+    fault_model, fault_tuning = _fit_classifier_with_optional_search(
+        fault_pipeline,
+        fault_classifier_name,
+        X,
+        training_frame["fault_type"],
+        role="Fault",
+        use_search=use_grid_search,
+    )
+
+    root_pipeline = build_classifier_pipeline(numeric_columns, root_cause_classifier_name)
+    root_cause_model, root_tuning = _fit_classifier_with_optional_search(
+        root_pipeline,
+        root_cause_classifier_name,
+        X,
+        training_frame["root_cause_service"],
+        role="Root cause",
+        use_search=use_grid_search,
+    )
 
     similarity_index = _fit_similarity_index(training_frame, numeric_columns)
     training_incidents = incidents.loc[
@@ -194,36 +235,51 @@ def train_all_models(
         },
         ANOMALY_MODEL_PATH,
     )
-    joblib.dump(
-        {
-            "model": fault_model,
-            "numeric_columns": numeric_columns,
-            "label_column": "fault_type",
-            "classifier_name": fault_classifier_name,
-        },
-        FAULT_MODEL_PATH,
-    )
-    joblib.dump(
-        {
-            "model": root_cause_model,
-            "numeric_columns": numeric_columns,
-            "label_column": "root_cause_service",
-            "classifier_name": root_cause_classifier_name,
-        },
-        ROOT_CAUSE_MODEL_PATH,
-    )
+    fault_bundle = {
+        "model": fault_model,
+        "numeric_columns": numeric_columns,
+        "label_column": "fault_type",
+        "classifier_name": fault_classifier_name,
+    }
+    if fault_tuning and not fault_tuning.get("search_failed"):
+        fault_bundle["tuning"] = fault_tuning
+    joblib.dump(fault_bundle, FAULT_MODEL_PATH)
+
+    root_bundle = {
+        "model": root_cause_model,
+        "numeric_columns": numeric_columns,
+        "label_column": "root_cause_service",
+        "classifier_name": root_cause_classifier_name,
+    }
+    if root_tuning and not root_tuning.get("search_failed"):
+        root_bundle["tuning"] = root_tuning
+    joblib.dump(root_bundle, ROOT_CAUSE_MODEL_PATH)
+
     joblib.dump(similarity_index, SIMILARITY_INDEX_PATH)
 
-    return {
+    result = {
         "incident_count": len(training_frame),
         "numeric_feature_count": len(numeric_columns),
         "model_dir": str(Path(MODELS_DIR)),
         "fault_classifier_name": fault_classifier_name,
         "root_cause_classifier_name": root_cause_classifier_name,
         "rag_document_count": len(rag_index["documents"]),
+        "fault_tuning": fault_tuning,
+        "root_cause_tuning": root_tuning,
     }
+    return result
 
 
 if __name__ == "__main__":
-    summary = train_all_models()
+    import argparse
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    parser = argparse.ArgumentParser(description="Train TriageAI models")
+    parser.add_argument(
+        "--tune",
+        action="store_true",
+        help="Run randomized hyperparameter search (much slower, ~many minutes on full data)",
+    )
+    args = parser.parse_args()
+    summary = train_all_models(use_grid_search=args.tune)
     print("Training complete:", summary)

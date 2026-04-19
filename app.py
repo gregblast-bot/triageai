@@ -67,6 +67,15 @@ def render_training_panel():
     )
     st.sidebar.caption("Anomaly detection remains Isolation Forest.")
 
+    use_hp_search = st.sidebar.checkbox(
+        "Randomized hyperparameter search (slower)",
+        value=False,
+        help=(
+            "Tunes fault and root-cause classifiers via RandomizedSearchCV (~40 trials × 3-fold CV each). "
+            "Can take many minutes on large datasets."
+        ),
+    )
+
     active_config = get_active_classifier_config()
     if active_config:
         st.sidebar.write(
@@ -76,18 +85,31 @@ def render_training_panel():
         )
 
     if st.sidebar.button("Generate data and train models", use_container_width=True):
-        with st.spinner("Training baseline models..."):
+        spinner_msg = (
+            "Training with hyperparameter search..."
+            if use_hp_search
+            else "Training baseline models..."
+        )
+        with st.spinner(spinner_msg):
             summary = train_all_models(
                 fault_classifier_name=classifier_options[selected_fault_label],
                 root_cause_classifier_name=classifier_options[selected_root_label],
+                use_grid_search=use_hp_search,
             )
         st.cache_data.clear()
         clear_caches()
-        st.success(
+        msg = (
             "Training complete. "
             f"fault=`{summary['fault_classifier_name']}`, "
             f"root cause=`{summary['root_cause_classifier_name']}`"
         )
+        ft = summary.get("fault_tuning") or {}
+        rt = summary.get("root_cause_tuning") or {}
+        if ft.get("best_cv_score") is not None:
+            msg += f" | fault CV f1_weighted={ft['best_cv_score']:.4f}"
+        if rt.get("best_cv_score") is not None:
+            msg += f" | root-cause CV f1_weighted={rt['best_cv_score']:.4f}"
+        st.success(msg)
 
 
 def render_incident_selector(incidents):
