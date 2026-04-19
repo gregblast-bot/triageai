@@ -6,6 +6,15 @@
   <p class="muted">
     Toggle service faults, run traffic bursts, and export a TriageAI-compatible telemetry window from the real stack.
   </p>
+  <div class="pill" style="margin-top: 10px;">
+    Active scenario: <strong>&nbsp;{{ active_scenario }}</strong>
+  </div>
+  {% if expected %}
+  <div class="pill" style="margin-top: 10px;">
+    Expected fault label: <strong>&nbsp;{{ expected.get("fault_type", "unknown") }}</strong>
+    &middot; service: <strong>&nbsp;{{ expected.get("root_cause_service", "unknown") }}</strong>
+  </div>
+  {% endif %}
 </div>
 
 <div class="grid-3" style="margin-top: 20px;">
@@ -15,11 +24,11 @@
   </div>
   <div class="metric">
     <div class="muted">Average latency</div>
-    <div class="value">{{ summary.get("avg_latency_ms", 0) }} ms</div>
+    <div class="value">{{ "%.1f"|format(summary.get("avg_latency_ms", 0)) }} ms</div>
   </div>
   <div class="metric">
     <div class="muted">Window error score</div>
-    <div class="value">{{ summary.get("window_error_score", 0) }}</div>
+    <div class="value">{{ "%.1f"|format(summary.get("window_error_score", 0)) }}</div>
   </div>
 </div>
 
@@ -30,7 +39,7 @@
       <label for="scenario">Choose scenario</label>
       <select id="scenario" name="scenario">
         {% for scenario in scenarios %}
-        <option value="{{ scenario }}">{{ scenario }}</option>
+        <option value="{{ scenario }}" {% if scenario == active_scenario %}selected{% endif %}>{{ scenario }}</option>
         {% endfor %}
       </select>
       <button type="submit">Apply scenario</button>
@@ -126,11 +135,11 @@
         {% for row in summary.get("window", []) %}
         <tr>
           <td>{{ row.minute }}</td>
-          <td>{{ row.error_rate }}</td>
-          <td>{{ row.latency_ms }}</td>
-          <td>{{ row.cpu_pct }}</td>
-          <td>{{ row.memory_pct }}</td>
-          <td>{{ row.queue_depth }}</td>
+          <td>{{ "%.2f"|format(row.error_rate) }}</td>
+          <td>{{ "%.1f"|format(row.latency_ms) }}</td>
+          <td>{{ "%.2f"|format(row.cpu_pct) }}</td>
+          <td>{{ "%.3f"|format(row.memory_pct) }}</td>
+          <td>{{ "%.2f"|format(row.queue_depth) }}</td>
         </tr>
         {% endfor %}
       </tbody>

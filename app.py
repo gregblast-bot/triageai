@@ -52,47 +52,49 @@ def render_header():
 
 
 def render_training_panel():
-    st.sidebar.header("Setup")
-    st.sidebar.write(
-        "Train the anomaly detector, classifiers, similarity index, and local retrieval index."
-    )
-
-    classifier_options = {
-        "Random Forest": "random_forest",
-        "Random Forest (Balanced)": "random_forest_balanced",
-        "Random Forest (Balanced Subsample)": "random_forest_balanced_subsample",
-        "Logistic Regression": "logistic_regression",
-    }
-    selected_fault_label = st.sidebar.selectbox(
-        "Fault classifier",
-        options=list(classifier_options.keys()),
-        index=2,
-    )
-    selected_root_label = st.sidebar.selectbox(
-        "Root-cause classifier",
-        options=list(classifier_options.keys()),
-        index=2,
-    )
-    st.sidebar.caption("Anomaly detection remains Isolation Forest.")
-
-    use_hp_search = st.sidebar.checkbox(
-        "Randomized hyperparameter search (slower)",
-        value=False,
-        help=(
-            "Tunes fault and root-cause classifiers via RandomizedSearchCV (~40 trials × 3-fold CV each). "
-            "Can take many minutes on large datasets."
-        ),
-    )
-
-    active_config = get_active_classifier_config()
-    if active_config:
-        st.sidebar.write(
-            "Active trained models: "
-            f"fault=`{active_config['fault_classifier_name']}`, "
-            f"root cause=`{active_config['root_cause_classifier_name']}`"
+    with st.sidebar.expander("Training setup", expanded=not models_ready()):
+        st.write(
+            "Train the anomaly detector, classifiers, similarity index, and local retrieval index."
         )
 
-    if st.sidebar.button("Generate data and train models", use_container_width=True):
+        classifier_options = {
+            "Random Forest": "random_forest",
+            "Random Forest (Balanced)": "random_forest_balanced",
+            "Random Forest (Balanced Subsample)": "random_forest_balanced_subsample",
+            "Logistic Regression": "logistic_regression",
+        }
+        selected_fault_label = st.selectbox(
+            "Fault classifier",
+            options=list(classifier_options.keys()),
+            index=2,
+        )
+        selected_root_label = st.selectbox(
+            "Root-cause classifier",
+            options=list(classifier_options.keys()),
+            index=2,
+        )
+        st.caption("Anomaly detection remains Isolation Forest (trained on normal rows).")
+
+        use_hp_search = st.checkbox(
+            "Randomized hyperparameter search (slower)",
+            value=False,
+            help=(
+                "Tunes fault and root-cause classifiers via RandomizedSearchCV (~40 trials × 3-fold CV each). "
+                "Can take many minutes on large datasets."
+            ),
+        )
+
+        active_config = get_active_classifier_config()
+        if active_config:
+            st.write(
+                "Active trained models: "
+                f"fault=`{active_config['fault_classifier_name']}`, "
+                f"root cause=`{active_config['root_cause_classifier_name']}`"
+            )
+
+        train_clicked = st.button("Generate data and train models", use_container_width=True)
+
+    if train_clicked:
         spinner_msg = (
             "Training with hyperparameter search..."
             if use_hp_search
@@ -117,7 +119,7 @@ def render_training_panel():
             msg += f" | fault CV f1_weighted={ft['best_cv_score']:.4f}"
         if rt.get("best_cv_score") is not None:
             msg += f" | root-cause CV f1_weighted={rt['best_cv_score']:.4f}"
-        st.success(msg)
+        st.sidebar.success(msg)
 
 
 def render_incident_selector(incidents):
@@ -251,15 +253,33 @@ def render_custom_incident_overview(title: str, description: str):
     )
 
 
-def render_live_ingest_overview(title: str, description: str, control_plane_url: str):
+def render_live_ingest_overview(
+    title: str,
+    description: str,
+    control_plane_url: str,
+    *,
+    meta: dict | None = None,
+):
+    meta = meta or {}
+    expected = meta.get("expected") or {}
+    active_scenario = meta.get("active_scenario") or "unknown"
+
     col1, col2, col3 = st.columns(3)
     col1.metric("Source", "Live HTTP window")
-    col2.metric("Control plane", control_plane_url[:40] + ("…" if len(control_plane_url) > 40 else ""))
-    col3.metric("Training labels", "Unavailable")
+    col2.metric("Active scenario", active_scenario)
+    col3.metric(
+        "Expected fault",
+        expected.get("fault_type", "unknown"),
+    )
+    st.caption(f"Control plane: `{control_plane_url}`")
 
     st.subheader("Incident summary")
     st.write(f"**Title:** {title}")
     st.write(description)
+    if expected:
+        st.caption(
+            f"Expected root-cause service (per scenario preset): `{expected.get('root_cause_service', 'unknown')}`"
+        )
     st.info(
         "Telemetry is polled from the control plane API (not uploaded CSV). "
         "Run `docker compose -f fault_lab/docker-compose.yml up` and generate traffic in the storefront."
@@ -278,18 +298,21 @@ def _run_live_ingest_triage():
     limit = int(st.session_state.get("live_limit", 120))
     title = st.session_state.get("live_incident_title", "Live fault-lab window")
     description = st.session_state.get("live_incident_desc", "")
-    metrics_df, err = fetch_telemetry_window(base_url, limit=limit)
+    metrics_df, err, meta = fetch_telemetry_window(base_url, limit=limit)
     if err:
         st.error(err)
         return None
-    render_live_ingest_overview(title, description, base_url)
+    render_live_ingest_overview(title, description, base_url, meta=meta)
     render_metric_charts(metrics_df)
-    return triage_custom_metrics(
+    result = triage_custom_metrics(
         metrics_df,
         title=title,
         description=description,
         incident_id="LIVE-HTTP-001",
     )
+    result["expected"] = meta.get("expected") or {}
+    result["active_scenario"] = meta.get("active_scenario")
+    return result
 
 
 def render_triage_output(result):
@@ -298,6 +321,27 @@ def render_triage_output(result):
     col1.metric("Anomaly flag", "Abnormal" if result["unusual"] else "Normal")
     col2.metric("Fault prediction", result["predicted_fault_type"])
     col3.metric("Root-cause prediction", result["predicted_root_cause_service"])
+
+    expected = result.get("expected") or {}
+    if expected:
+        expected_fault = expected.get("fault_type", "unknown")
+        expected_service = expected.get("root_cause_service", "unknown")
+        fault_match = expected_fault == result["predicted_fault_type"]
+        service_match = expected_service == result["predicted_root_cause_service"]
+        msg = (
+            f"Expected fault: `{expected_fault}` "
+            f"(predicted `{result['predicted_fault_type']}` — "
+            f"{'match' if fault_match else 'mismatch'}).  \n"
+            f"Expected service: `{expected_service}` "
+            f"(predicted `{result['predicted_root_cause_service']}` — "
+            f"{'match' if service_match else 'mismatch'})."
+        )
+        if fault_match and service_match:
+            st.success(msg)
+        elif fault_match or service_match:
+            st.warning(msg)
+        else:
+            st.error(msg)
 
     classifier_config = get_active_classifier_config()
     if classifier_config:
@@ -337,11 +381,11 @@ def render_triage_output(result):
 
 def main():
     render_header()
-    render_training_panel()
     mode = render_mode_selector()
+    render_training_panel()
 
     if not models_ready():
-        st.info("Baseline models are not trained yet. Use the sidebar to train them.")
+        st.info("Baseline models are not trained yet. Use the **Training setup** expander in the sidebar.")
         return
 
     if mode == "Dataset incident":
@@ -361,11 +405,11 @@ def main():
         refresh_mode = render_live_ingest_panel()
         interval_map = {"Manual (button)": 0, "Every 5s": 5, "Every 10s": 10, "Every 30s": 30}
         interval_sec = interval_map.get(refresh_mode, 0)
-        fragment = getattr(st, "fragment", None)
 
-        if fragment and interval_sec > 0:
+        if interval_sec > 0:
+            st.caption(f"Auto-refreshing every {interval_sec}s. Select **Manual (button)** to pause.")
 
-            @fragment(run_every=timedelta(seconds=interval_sec))
+            @st.fragment(run_every=timedelta(seconds=interval_sec))
             def _live_auto():
                 result = _run_live_ingest_triage()
                 if result is not None:
@@ -373,18 +417,14 @@ def main():
 
             _live_auto()
         else:
-            if interval_sec > 0 and fragment is None:
-                st.warning(
-                    "Auto-refresh needs Streamlit 1.33+ (`st.fragment`). "
-                    "Use **Manual (button)** or upgrade Streamlit."
-                )
-            if interval_sec == 0 or fragment is None:
-                if st.button("Fetch latest window & run triage", type="primary", key="live_fetch_btn"):
-                    result = _run_live_ingest_triage()
-                    if result is not None:
-                        render_triage_output(result)
-                if interval_sec == 0:
-                    st.caption("Tip: start fault_lab (`docker compose -f fault_lab/docker-compose.yml up`), then browse the storefront.")
+            if st.button("Fetch latest window & run triage", type="primary", key="live_fetch_btn"):
+                result = _run_live_ingest_triage()
+                if result is not None:
+                    render_triage_output(result)
+            st.caption(
+                "Tip: start fault_lab (`docker compose -f fault_lab/docker-compose.yml up`), "
+                "then browse the storefront."
+            )
         return
 
     title, description, uploaded_file = render_upload_panel()

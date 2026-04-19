@@ -5,6 +5,10 @@ from pathlib import Path
 
 
 CONTROL_BASE_URL = os.getenv("CONTROL_BASE_URL", "http://control-plane:8000")
+# Public (browser-reachable) URL of the control plane, used only for links
+# emitted into HTML. Inside docker, services talk to control-plane via
+# CONTROL_BASE_URL, but browsers on the host need the host-mapped port.
+CONTROL_PUBLIC_URL = os.getenv("CONTROL_PUBLIC_URL", "http://localhost:8001")
 AUTH_BASE_URL = os.getenv("AUTH_BASE_URL", "http://auth-service:8000")
 CATALOG_BASE_URL = os.getenv("CATALOG_BASE_URL", "http://catalog-service:8000")
 CART_BASE_URL = os.getenv("CART_BASE_URL", "http://cart-service:8000")
@@ -14,6 +18,11 @@ SERVICE_NAME = os.getenv("SERVICE_NAME", "unknown-service")
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "6.0"))
 FAULT_CACHE_TTL_SEC = float(os.getenv("FAULT_CACHE_TTL_SEC", "0.75"))
 TELEMETRY_DB_PATH = Path(os.getenv("TELEMETRY_DB_PATH", "/data/fault_lab.db"))
+
+# Bucket window size in seconds. Training features are computed over 120
+# samples, so a 60-second bucket matches the "1 minute" semantic in the
+# training data. Lower this to shorten the observation window.
+TELEMETRY_BUCKET_SEC = float(os.getenv("TELEMETRY_BUCKET_SEC", "60"))
 
 # Demo-only plaintext credentials — NOT suitable for production use.
 DEFAULT_USERS = {
@@ -88,4 +97,35 @@ SCENARIO_PRESETS = {
             "latency_spike": 0.40,
         },
     },
+}
+
+
+# Expected model predictions per fault-lab scenario. The TriageAI models are
+# trained on RCAEval labels (fault_type in {healthy, cpu, mem, disk, delay,
+# loss, socket}) and RCAEval service names (cartservice, checkoutservice...).
+# This dictionary is the "ground truth" used when the control plane reports
+# what a given scenario *should* produce, so the UI can show expected vs.
+# predicted.
+SCENARIO_EXPECTATION = {
+    "healthy": {"fault_type": "healthy", "root_cause_service": "none"},
+    "login_outage": {"fault_type": "loss", "root_cause_service": "adservice"},
+    "catalog_brownout": {"fault_type": "delay", "root_cause_service": "productcatalogservice"},
+    "cart_memory_leak": {"fault_type": "mem", "root_cause_service": "cartservice"},
+    "checkout_cpu_hot": {"fault_type": "cpu", "root_cause_service": "checkoutservice"},
+    "cascading_checkout_failure": {
+        "fault_type": "delay",
+        "root_cause_service": "checkoutservice",
+    },
+}
+
+# When fault-lab emits telemetry it tags each event with its internal service
+# name (e.g. "cart-service"). The training data uses RCAEval canonical names.
+# This map is applied at the point we need to expose a "predicted service"
+# comparison. It is intentionally a display-only concept; the ML models still
+# see raw internal names only via the text channel.
+FAULT_LAB_SERVICE_ALIAS = {
+    "auth-service": "adservice",
+    "cart-service": "cartservice",
+    "catalog-service": "productcatalogservice",
+    "checkout-service": "checkoutservice",
 }

@@ -193,12 +193,24 @@ def train_all_models(
         if not train_subset.empty:
             training_frame = train_subset
 
+    # Fit Isolation Forest on *labeled-normal* rows only so the learned
+    # "typical" manifold isn't dragged toward injected-fault patterns. Fall
+    # back to the whole training frame only when the dataset has no normal
+    # rows at all.
+    normal_frame = training_frame[~training_frame["is_anomalous"].astype(bool)]
+    if len(normal_frame) < 10:
+        normal_frame = training_frame
+        anomaly_contamination = get_contamination_rate(
+            training_frame["is_anomalous"].mean()
+        )
+    else:
+        anomaly_contamination = "auto"
     anomaly_model = IsolationForest(
         n_estimators=250,
-        contamination=get_contamination_rate(training_frame["is_anomalous"].mean()),
+        contamination=anomaly_contamination,
         random_state=42,
     )
-    anomaly_model.fit(training_frame[numeric_columns])
+    anomaly_model.fit(normal_frame[numeric_columns])
 
     X = training_frame[numeric_columns + ["text"]]
 

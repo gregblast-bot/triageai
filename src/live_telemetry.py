@@ -15,12 +15,19 @@ def fetch_telemetry_window(
     *,
     limit: int = 120,
     timeout_sec: float = 10.0,
-) -> tuple[pd.DataFrame | None, str | None]:
+) -> tuple[pd.DataFrame | None, str | None, dict]:
     """
     Pull the latest aggregated metric window from a fault-lab control plane (or compatible API).
 
-    Expects GET {base}/api/telemetry/window?limit=N returning JSON: {"rows": [ {...}, ... ]}.
+    Expects GET {base}/api/telemetry/window?limit=N returning JSON:
+        {"rows": [ {...}, ... ],
+         "active_scenario": "...",
+         "expected": {"fault_type": "...", "root_cause_service": "..."}}
     Each row must include minute and METRIC_COLUMNS fields compatible with TriageAI.
+
+    Returns a triple of (frame_or_none, error_or_none, meta_dict). The meta
+    dict carries scenario hints when the control plane returns them; callers
+    that just want the old (frame, err) tuple can ignore it.
     """
     base = control_plane_base_url.strip().rstrip("/")
     if not base.startswith("http://") and not base.startswith("https://"):
@@ -34,32 +41,37 @@ def fetch_telemetry_window(
         with urlopen(req, timeout=timeout_sec) as resp:
             raw = resp.read().decode("utf-8")
     except HTTPError as exc:
-        return None, f"HTTP {exc.code} from control plane: {exc.reason}"
+        return None, f"HTTP {exc.code} from control plane: {exc.reason}", {}
     except URLError as exc:
-        return None, f"Could not reach control plane ({url}): {exc.reason}"
+        return None, f"Could not reach control plane ({url}): {exc.reason}", {}
     except OSError as exc:
-        return None, f"Network error: {exc}"
+        return None, f"Network error: {exc}", {}
 
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
-        return None, f"Invalid JSON from control plane: {exc}"
+        return None, f"Invalid JSON from control plane: {exc}", {}
 
     rows = payload.get("rows")
     if not isinstance(rows, list):
-        return None, "Control plane response missing 'rows' list."
+        return None, "Control plane response missing 'rows' list.", {}
+
+    meta = {
+        "active_scenario": payload.get("active_scenario"),
+        "expected": payload.get("expected") or {},
+    }
 
     if not rows:
-        return None, "No telemetry rows yet. Generate traffic in the fault lab, then refresh."
+        return None, "No telemetry rows yet. Generate traffic in the fault lab, then refresh.", meta
 
     frame = pd.DataFrame(rows)
     required = ["minute", *METRIC_COLUMNS]
     missing = [c for c in required if c not in frame.columns]
     if missing:
-        return None, f"Window rows missing columns: {', '.join(missing)}"
+        return None, f"Window rows missing columns: {', '.join(missing)}", meta
 
     for col in METRIC_COLUMNS:
         frame[col] = pd.to_numeric(frame[col], errors="coerce").fillna(0.0)
     frame["minute"] = pd.to_numeric(frame["minute"], errors="coerce").fillna(0).astype(int)
 
-    return frame, None
+    return frame, None, meta

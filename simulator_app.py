@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 import streamlit as st
 
 from src.config import METRIC_COLUMNS
@@ -165,6 +167,23 @@ def render_telemetry(state: dict):
     st.dataframe(event_log_frame(state, limit=12), use_container_width=True, hide_index=True)
 
 
+@st.cache_data(show_spinner=False)
+def _cached_triage(payload_hash: str, csv_text: str, title: str, description: str) -> dict:
+    # payload_hash just forces Streamlit's cache key to change when any
+    # telemetry sample changes. The heavy work is a full triage pass.
+    import io
+
+    import pandas as pd
+
+    metrics = pd.read_csv(io.StringIO(csv_text))
+    return triage_custom_metrics(
+        metrics,
+        title=title,
+        description=description,
+        incident_id="SHOPSIM-LIVE-001",
+    )
+
+
 def render_triage_preview(state: dict):
     st.subheader("TriageAI preview")
     if not models_ready():
@@ -172,13 +191,18 @@ def render_triage_preview(state: dict):
         return
 
     history = history_frame(state, limit=120)
-    result = triage_custom_metrics(
-        history,
+    if history.empty:
+        st.caption("Not enough telemetry yet. Interact with the storefront to produce samples.")
+        return
+    csv_text = history.to_csv(index=False)
+    payload_hash = hashlib.sha1(csv_text.encode("utf-8")).hexdigest()
+    result = _cached_triage(
+        payload_hash,
+        csv_text,
         title="ShopSim session",
         description=(
             f"Simulated ecommerce telemetry with scenario {state['scenario']} under {state['traffic_level']} traffic."
         ),
-        incident_id="SHOPSIM-LIVE-001",
     )
 
     col1, col2, col3 = st.columns(3)

@@ -10,6 +10,12 @@ from .clients import request_json
 from .config import CONTROL_BASE_URL, FAULT_CACHE_TTL_SEC
 
 
+# Total logical cores on the host. Used to normalize `Process.cpu_percent`
+# (which can exceed 100 on multi-core) to host-wide %. Memoized because
+# `cpu_count` returns a stable value and reading it is cheap but not free.
+_CPU_COUNT = max(1, psutil.cpu_count(logical=True) or 1)
+
+
 @dataclass
 class RequestContext:
     start_time: float
@@ -77,7 +83,8 @@ class ServiceRuntime:
         extra_cpu: float = 0.0,
     ) -> None:
         latency_ms = (time.perf_counter() - context.start_time) * 1000.0
-        cpu_pct = max(0.0, self._process.cpu_percent(None) / 7.0 + extra_cpu)
+        raw_cpu = self._process.cpu_percent(None)
+        cpu_pct = max(0.0, raw_cpu / _CPU_COUNT + extra_cpu)
         memory_mb = self._process.memory_info().rss / (1024 * 1024)
         payload = {
             "service": self.service_name,
