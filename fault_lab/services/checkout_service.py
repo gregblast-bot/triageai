@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import random
 import uuid
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -18,7 +19,7 @@ runtime = ServiceRuntime("checkout-service")
 
 class CheckoutRequest(BaseModel):
     client_id: str
-    session_token: str | None = None
+    session_token: Optional[str] = None
 
 
 @app.get("/health")

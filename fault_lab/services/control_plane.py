@@ -4,7 +4,7 @@ import csv
 import io
 import sqlite3
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
@@ -152,51 +152,26 @@ def recent_events(limit: int = 40) -> list[dict]:
 
 
 def build_window(limit: int = 120) -> list[dict]:
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=limit * 2)
     with db_lock:
         conn = get_conn()
         rows = conn.execute(
             """
             SELECT created_at, latency_ms, cpu_pct, memory_mb, queue_depth, error, auth_error
             FROM telemetry_events
-            WHERE created_at >= ?
-            ORDER BY created_at ASC
+            ORDER BY id DESC
+            LIMIT ?
             """,
-            (cutoff.isoformat(),),
+            (limit,),
         ).fetchall()
         conn.close()
 
-    buckets: dict[int, list[sqlite3.Row]] = {}
-    now = datetime.now(timezone.utc)
-    for row in rows:
-        created = datetime.fromisoformat(row["created_at"])
-        delta = int((now - created).total_seconds())
-        if delta < 0 or delta >= limit:
-            continue
-        bucket_index = limit - 1 - delta
-        buckets.setdefault(bucket_index, []).append(row)
+    event_rows = list(reversed(rows))
+    baseline_count = max(0, limit - len(event_rows))
 
     window = []
-    for bucket_index in range(limit):
-        bucket_rows = buckets.get(bucket_index, [])
-        if bucket_rows:
-            error_count = sum(int(row["error"]) for row in bucket_rows)
-            auth_errors = sum(int(row["auth_error"]) for row in bucket_rows)
-            latency = sum(float(row["latency_ms"]) for row in bucket_rows) / len(bucket_rows)
-            cpu = sum(float(row["cpu_pct"]) for row in bucket_rows) / len(bucket_rows)
-            memory = sum(float(row["memory_mb"]) for row in bucket_rows) / len(bucket_rows)
-            queue = max(float(row["queue_depth"]) for row in bucket_rows)
-            row = {
-                "minute": bucket_index,
-                "error_rate": min(50.0, error_count * 6.5),
-                "latency_ms": min(3000.0, max(8.0, latency)),
-                "cpu_pct": min(16.0, max(0.7, cpu)),
-                "memory_pct": min(0.19, max(0.03, memory / 1024.0)),
-                "queue_depth": min(320.0, queue * 14.0),
-                "auth_error_rate": min(2.5, auth_errors * 0.75),
-            }
-        else:
-            row = {
+    for bucket_index in range(baseline_count):
+        window.append(
+            {
                 "minute": bucket_index,
                 "error_rate": 0.0,
                 "latency_ms": 18.0,
@@ -205,7 +180,20 @@ def build_window(limit: int = 120) -> list[dict]:
                 "queue_depth": 0.0,
                 "auth_error_rate": 0.0,
             }
-        window.append(row)
+        )
+
+    for offset, event in enumerate(event_rows, start=baseline_count):
+        window.append(
+            {
+                "minute": offset,
+                "error_rate": 6.5 if int(event["error"]) else 0.0,
+                "latency_ms": min(3000.0, max(8.0, float(event["latency_ms"]))),
+                "cpu_pct": min(16.0, max(0.7, float(event["cpu_pct"]))),
+                "memory_pct": min(0.19, max(0.03, float(event["memory_mb"]) / 1024.0)),
+                "queue_depth": min(320.0, max(0.0, float(event["queue_depth"]) * 14.0)),
+                "auth_error_rate": 0.75 if int(event["auth_error"]) else 0.0,
+            }
+        )
     return window
 
 

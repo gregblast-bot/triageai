@@ -1,0 +1,188 @@
+name: TriageAI CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  python:
+    name: Python pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            fault_lab/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r fault_lab/requirements.txt
+
+      - name: Compile and import modules
+        run: |
+          python -m py_compile app.py simulator_app.py src/*.py fault_lab/common/*.py fault_lab/services/*.py fault_lab/frontend/app.py
+          python - <<'PY'
+          import app
+          import simulator_app
+
+          modules = [
+              "src.config",
+              "src.data",
+              "src.features",
+              "src.train_models",
+              "src.eval",
+              "src.triage",
+              "src.rag",
+              "src.simulator",
+              "fault_lab.services.control_plane",
+              "fault_lab.services.auth_service",
+              "fault_lab.services.catalog_service",
+              "fault_lab.services.cart_service",
+              "fault_lab.services.checkout_service",
+              "fault_lab.frontend.app",
+          ]
+          for module in modules:
+              __import__(module)
+              print(f"{module} ok")
+          PY
+
+      - name: Validate processed dataset
+        run: |
+          python - <<'PY'
+          from src.data import load_incidents, load_metrics
+          from src.config import METRIC_COLUMNS
+
+          incidents = load_incidents()
+          metrics = load_metrics()
+          required_incident_columns = {
+              "incident_id",
+              "fault_type",
+              "root_cause_service",
+              "is_anomalous",
+              "data_split",
+          }
+          missing = required_incident_columns - set(incidents.columns)
+          assert not missing, f"Missing incident columns: {missing}"
+          missing_metrics = {"incident_id", "minute", *METRIC_COLUMNS} - set(metrics.columns)
+          assert not missing_metrics, f"Missing metric columns: {missing_metrics}"
+          assert len(incidents) > 0, "No incidents loaded"
+          assert len(metrics) > 0, "No metrics loaded"
+          assert set(incidents["incident_id"]).issubset(set(metrics["incident_id"])), "Incident without metrics"
+          print(f"incidents={len(incidents)} metrics={len(metrics)}")
+          print(incidents["fault_type"].value_counts().sort_index().to_string())
+          PY
+
+      - name: Train models and run evaluation
+        run: |
+          python -m src.train_models
+          python -m src.eval
+
+      - name: Smoke-test triage predictions
+        run: |
+          python - <<'PY'
+          from src.config import METRIC_COLUMNS
+          from src.data import load_incidents, load_metrics
+          from src.triage import triage_custom_metrics, triage_incident
+
+          incidents = load_incidents()
+          metrics = load_metrics()
+          test_incidents = incidents[incidents["data_split"].eq("Test")]
+          sample = test_incidents.iloc[0] if not test_incidents.empty else incidents.iloc[0]
+          result = triage_incident(sample["incident_id"])
+          assert result["predicted_fault_type"], "Missing fault prediction"
+          assert result["top_similar_incidents"], "Missing similar incidents"
+          assert result["retrieved_context"]["documents"], "Missing retrieved context"
+          print("dataset prediction:", result["incident_id"], result["predicted_fault_type"])
+
+          custom_metrics = metrics[metrics["incident_id"].eq(sample["incident_id"])][["minute", *METRIC_COLUMNS]]
+          custom_result = triage_custom_metrics(
+              custom_metrics,
+              title="CI uploaded telemetry smoke test",
+              description="Generated from a held-out processed incident window.",
+          )
+          assert custom_result["predicted_fault_type"], "Missing custom prediction"
+          print("custom prediction:", custom_result["predicted_fault_type"])
+          PY
+
+  fault-lab:
+    name: Fault Lab Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate Compose file
+        run: |
+          compose() {
+            if docker compose version >/dev/null 2>&1; then
+              docker compose "$@"
+            else
+              docker-compose "$@"
+            fi
+          }
+          compose -f fault_lab/docker-compose.yml config
+
+      - name: Build and start Fault Lab
+        run: |
+          compose() {
+            if docker compose version >/dev/null 2>&1; then
+              docker compose "$@"
+            else
+              docker-compose "$@"
+            fi
+          }
+          compose -f fault_lab/docker-compose.yml up -d --build
+
+      - name: Smoke-test Fault Lab endpoints
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://localhost:8001/health >/dev/null && curl -fsS http://localhost:8090/ >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+
+          curl -fsS http://localhost:8001/health
+          curl -fsS http://localhost:8090/ | grep -q "Fault Lab"
+          curl -fsS -X POST -H 'Content-Type: application/json' \
+            -d '{"scenario":"cart_memory_leak"}' \
+            http://localhost:8001/api/faults/scenario
+          curl -fsS http://localhost:8001/api/telemetry/window.csv?limit=5 | grep -q "minute,error_rate,latency_ms"
+
+      - name: Show container logs on failure
+        if: failure()
+        run: |
+          compose() {
+            if docker compose version >/dev/null 2>&1; then
+              docker compose "$@"
+            else
+              docker-compose "$@"
+            fi
+          }
+          compose -f fault_lab/docker-compose.yml logs --no-color
+
+      - name: Stop Fault Lab
+        if: always()
+        run: |
+          compose() {
+            if docker compose version >/dev/null 2>&1; then
+              docker compose "$@"
+            else
+              docker-compose "$@"
+            fi
+          }
+          compose -f fault_lab/docker-compose.yml down -v

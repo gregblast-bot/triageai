@@ -108,6 +108,22 @@ Then open:
 - Storefront: `http://localhost:8090`
 - Control plane: `http://localhost:8001`
 
+## GitHub Actions
+
+This repository includes a CI workflow at `.github/workflows/ci.yml`.
+It runs on push, pull request, and manual dispatch.
+
+The workflow:
+
+- installs the main TriageAI dependencies and Fault Lab dependencies
+- compiles and imports the Streamlit, ML, and FastAPI modules
+- validates the processed incident and metric dataset
+- trains the models and runs evaluation
+- smoke-tests dataset and uploaded-CSV triage paths
+- validates, builds, starts, and smoke-tests the Fault Lab Docker Compose stack
+
+GitHub Actions is for validation/build automation. It does not permanently host the Streamlit or Fault Lab apps. For a public live demo, deploy the app separately on a hosting service such as Streamlit Community Cloud, Render, Railway, or Hugging Face Spaces.
+
 ## Main App
 
 `app.py` supports two input modes:

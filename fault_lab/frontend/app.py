@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from pathlib import Path
+from typing import Optional
 from urllib.parse import quote_plus
 
 from fastapi import FastAPI, Form, Request
@@ -31,7 +32,7 @@ def redirect_with_message(path: str, message: str, level: str = "info") -> Redir
     return response
 
 
-def ensure_client_id(request: Request, response: object | None = None) -> str:
+def ensure_client_id(request: Request, response: Optional[object] = None) -> str:
     client_id = request.cookies.get("client_id")
     if client_id:
         return client_id
@@ -41,7 +42,7 @@ def ensure_client_id(request: Request, response: object | None = None) -> str:
     return client_id
 
 
-async def load_home_context(request: Request, client_id: str, q: str | None = None) -> dict:
+async def load_home_context(request: Request, client_id: str, q: Optional[str] = None) -> dict:
     status_code, payload = await request_json(
         "GET",
         f"{CATALOG_BASE_URL}/products",
@@ -112,7 +113,7 @@ async def load_admin_context(request: Request) -> dict:
 
 
 @app.get("/", response_class=HTMLResponse)
-async def home(request: Request, q: str | None = None):
+async def home(request: Request, q: Optional[str] = None):
     client_id = ensure_client_id(request)
     context = await load_home_context(request, client_id, q=q)
     response = templates.TemplateResponse("home.html", context)
@@ -256,7 +257,7 @@ async def simulate_browse_burst(client_id: str) -> None:
     await asyncio.gather(*tasks)
 
 
-async def simulate_checkout_burst(client_id: str, session_token: str | None) -> None:
+async def simulate_checkout_burst(client_id: str, session_token: Optional[str]) -> None:
     token = session_token
     if not token:
         login_status, login_payload = await request_json(
