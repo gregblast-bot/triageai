@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 
@@ -47,7 +48,7 @@ PRODUCTS = [
 ]
 
 
-def maybe_filter_products(query: str | None = None, ids: str | None = None) -> list[dict]:
+def maybe_filter_products(query: Optional[str] = None, ids: Optional[str] = None) -> list[dict]:
     if ids:
         wanted = {item.strip() for item in ids.split(",") if item.strip()}
         return [product for product in PRODUCTS if product["id"] in wanted]
@@ -69,7 +70,7 @@ async def health() -> dict:
 
 
 @app.get("/products")
-async def list_products(q: str | None = None, ids: str | None = None) -> dict:
+async def list_products(q: Optional[str] = None, ids: Optional[str] = None) -> dict:
     context = runtime.begin_request()
     status_code = 200
     extra_cpu = 0.25

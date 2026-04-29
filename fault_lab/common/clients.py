@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Optional
 
 import httpx
 
 from .config import REQUEST_TIMEOUT
 
-_shared_client: httpx.AsyncClient | None = None
+_shared_client: Optional[httpx.AsyncClient] = None
 
 
 def _get_client(timeout: float = REQUEST_TIMEOUT) -> httpx.AsyncClient:
@@ -27,14 +28,14 @@ async def request(
     method: str,
     url: str,
     *,
-    params: dict | None = None,
-    json: dict | None = None,
-    headers: dict | None = None,
+    params: Optional[dict] = None,
+    json: Optional[dict] = None,
+    headers: Optional[dict] = None,
     retries: int = 2,
     timeout: float = REQUEST_TIMEOUT,
 ) -> httpx.Response:
     client = _get_client(timeout)
-    last_exc: Exception | None = None
+    last_exc: Optional[Exception] = None
     for attempt in range(retries + 1):
         try:
             return await client.request(
@@ -56,9 +57,9 @@ async def request_json(
     method: str,
     url: str,
     *,
-    params: dict | None = None,
-    json: dict | None = None,
-    headers: dict | None = None,
+    params: Optional[dict] = None,
+    json: Optional[dict] = None,
+    headers: Optional[dict] = None,
     retries: int = 2,
     timeout: float = REQUEST_TIMEOUT,
 ) -> tuple[int, dict]:
