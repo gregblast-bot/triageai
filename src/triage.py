@@ -19,6 +19,20 @@ _model_cache: dict[str, dict] = {}
 _feature_frame_cache: pd.DataFrame | None = None
 
 
+_SIGNAL_METRICS = [
+    "error_rate",
+    "latency_ms",
+    "cpu_pct",
+    "memory_pct",
+    "queue_depth",
+    "auth_error_rate",
+    "latency_p50_ms",
+    "load_avg",
+    "disk_io",
+    "socket_count",
+]
+
+
 def models_ready() -> bool:
     return all(path.exists() for path in MODEL_FILES.values())
 
@@ -48,6 +62,68 @@ def _load_feature_frame() -> pd.DataFrame:
     metrics = load_metrics()
     _feature_frame_cache = build_feature_frame(incidents, metrics)
     return _feature_frame_cache
+
+
+def _signal_highlights(row: pd.Series, limit: int = 6) -> list[dict]:
+    highlights = []
+    for metric in _SIGNAL_METRICS:
+        fields = {
+            "mean": float(row.get(f"{metric}_mean", 0.0)),
+            "max": float(row.get(f"{metric}_max", 0.0)),
+            "delta": float(row.get(f"{metric}_delta", 0.0)),
+            "spike": float(row.get(f"{metric}_spike", 0.0)),
+            "slope": float(row.get(f"{metric}_slope", 0.0)),
+        }
+        scale = max(abs(fields["mean"]), abs(fields["max"]), 1.0)
+        score = (
+            abs(fields["delta"]) / scale
+            + abs(fields["spike"]) / scale
+            + min(abs(fields["slope"]) / scale, 1.0)
+        )
+        if score <= 0:
+            continue
+        highlights.append(
+            {
+                "metric": metric,
+                "score": float(score),
+                **fields,
+            }
+        )
+
+    scalar_labels = {
+        "cpu_top_service_delta": "largest service CPU gap",
+        "mem_top_service_delta": "largest service memory gap",
+        "error_top_service_delta": "largest service error gap",
+        "latency_top_service_delta": "largest service latency gap",
+    }
+    for column, label in scalar_labels.items():
+        value = float(row.get(column, 0.0))
+        if value <= 0:
+            continue
+        highlights.append(
+            {
+                "metric": label,
+                "score": value,
+                "mean": value,
+                "max": value,
+                "delta": 0.0,
+                "spike": value,
+                "slope": 0.0,
+            }
+        )
+
+    highlights.sort(key=lambda item: item["score"], reverse=True)
+    return highlights[:limit]
+
+
+def _is_healthy_none_result(result: dict) -> bool:
+    fault = str(result.get("predicted_fault_type", "")).lower()
+    service = str(result.get("predicted_root_cause_service", "")).lower()
+    return (
+        fault == "healthy"
+        and service in {"none", "", "unknown", "unlabeled"}
+        and not bool(result.get("unusual", False))
+    )
 
 
 def _run_models_for_feature_row(
@@ -105,6 +181,7 @@ def _run_models_for_feature_row(
         "fault_confidence": float(fault_probabilities[fault_index]),
         "predicted_root_cause_service": str(root_classes[root_index]),
         "root_cause_confidence": float(root_probabilities[root_index]),
+        "signal_highlights": _signal_highlights(incident_row.iloc[0]),
     }
 
     if skip_similarity_and_rag:
@@ -138,8 +215,16 @@ def _run_models_for_feature_row(
             break
 
     result["top_similar_incidents"] = similar_incidents
-    rag_context = retrieve_context(incident_row.iloc[0], result)
-    result["retrieved_context"] = rag_context
+    if _is_healthy_none_result(result):
+        result["top_similar_incidents"] = []
+        result["retrieved_context"] = {
+            "query": "",
+            "summary": "No incident pattern detected; supporting references are not shown for healthy windows.",
+            "documents": [],
+        }
+    else:
+        rag_context = retrieve_context(incident_row.iloc[0], result)
+        result["retrieved_context"] = rag_context
     return result
 
 

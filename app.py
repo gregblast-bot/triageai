@@ -9,10 +9,15 @@ import streamlit as st
 
 from src.config import (
     DEFAULT_LIVE_CONTROL_PLANE_URL,
-    EVAL_SUMMARY_PATH,
     FAULT_MODEL_PATH,
     METRIC_COLUMNS,
     ROOT_CAUSE_MODEL_PATH,
+)
+from src.llm_explanations import (
+    DEFAULT_GEMINI_MODEL,
+    explain_triage_result,
+    load_cached_gemini_key,
+    save_cached_gemini_key,
 )
 from src.live_telemetry import fetch_telemetry_window
 from src.data import load_incidents, load_metrics
@@ -22,6 +27,47 @@ from src.triage import clear_caches, models_ready, triage_custom_metrics, triage
 
 
 st.set_page_config(page_title="TriageAI", layout="wide")
+
+MODE_HISTORICAL = "Historical incident"
+MODE_UPLOAD = "Upload telemetry CSV"
+MODE_LIVE = "Live telemetry"
+MODE_EVALUATION = "Model evaluation"
+
+
+def display_label(value) -> str:
+    return str(value).replace("_", " ").replace("-", " ").title()
+
+
+def display_metric_name(value: str) -> str:
+    replacements = {
+        "pct": "%",
+        "ms": "ms",
+        "cpu": "CPU",
+        "io": "I/O",
+        "p50": "p50",
+    }
+    parts = str(value).replace("_", " ").split()
+    return " ".join(replacements.get(part, part.title()) for part in parts)
+
+
+def is_healthy_none_result(result: dict) -> bool:
+    fault = str(result.get("predicted_fault_type", "")).lower()
+    service = str(result.get("predicted_root_cause_service", "")).lower()
+    return (
+        fault == "healthy"
+        and service in {"none", "", "unknown", "unlabeled"}
+        and not bool(result.get("unusual", False))
+    )
+
+
+def is_unmatched_anomaly_result(result: dict) -> bool:
+    fault = str(result.get("predicted_fault_type", "")).lower()
+    service = str(result.get("predicted_root_cause_service", "")).lower()
+    return (
+        fault == "healthy"
+        and service in {"none", "", "unknown", "unlabeled"}
+        and bool(result.get("unusual", False))
+    )
 
 
 @st.cache_data
@@ -54,9 +100,9 @@ def render_header():
 
 
 def render_training_panel():
-    with st.sidebar.expander("Training setup", expanded=not models_ready()):
+    with st.sidebar.expander("Model management", expanded=not models_ready()):
         st.write(
-            "Train the anomaly detector, classifiers, similarity index, and local retrieval index."
+            "Refresh the anomaly, classification, root-cause, and reference-case models."
         )
 
         classifier_options = {
@@ -75,32 +121,31 @@ def render_training_panel():
             options=list(classifier_options.keys()),
             index=2,
         )
-        st.caption("Anomaly detection remains Isolation Forest (trained on normal rows).")
+        st.caption("Anomaly detection is trained on normal reference windows.")
 
         use_hp_search = st.checkbox(
-            "Randomized hyperparameter search (slower)",
+            "Extended model search",
             value=False,
             help=(
-                "Tunes fault and root-cause classifiers via RandomizedSearchCV (~40 trials × 3-fold CV each). "
-                "Can take many minutes on large datasets."
+                "Runs a broader search over classifier settings. This is slower and intended for model refreshes."
             ),
         )
 
         active_config = get_active_classifier_config()
         if active_config:
             st.write(
-                "Active trained models: "
-                f"fault=`{active_config['fault_classifier_name']}`, "
-                f"root cause=`{active_config['root_cause_classifier_name']}`"
+                "Active model profile: "
+                f"fault={display_label(active_config['fault_classifier_name'])}, "
+                f"root cause={display_label(active_config['root_cause_classifier_name'])}"
             )
 
-        train_clicked = st.button("Generate data and train models", use_container_width=True)
+        train_clicked = st.button("Refresh models", use_container_width=True)
 
     if train_clicked:
         spinner_msg = (
-            "Training with hyperparameter search..."
+            "Running extended model search..."
             if use_hp_search
-            else "Training baseline models..."
+            else "Refreshing models..."
         )
         with st.spinner(spinner_msg):
             summary = train_all_models(
@@ -111,29 +156,90 @@ def render_training_panel():
         st.cache_data.clear()
         clear_caches()
         msg = (
-            "Training complete. "
-            f"fault=`{summary['fault_classifier_name']}`, "
-            f"root cause=`{summary['root_cause_classifier_name']}`"
+            "Model refresh complete. "
+            f"fault={display_label(summary['fault_classifier_name'])}, "
+            f"root cause={display_label(summary['root_cause_classifier_name'])}"
         )
         ft = summary.get("fault_tuning") or {}
         rt = summary.get("root_cause_tuning") or {}
         if ft.get("best_cv_score") is not None:
-            msg += f" | fault CV f1_weighted={ft['best_cv_score']:.4f}"
+            msg += f" | fault validation={ft['best_cv_score']:.4f}"
         if rt.get("best_cv_score") is not None:
-            msg += f" | root-cause CV f1_weighted={rt['best_cv_score']:.4f}"
+            msg += f" | root-cause validation={rt['best_cv_score']:.4f}"
         st.sidebar.success(msg)
 
 
+def render_explanation_panel():
+    with st.sidebar.expander("Explanation assistant", expanded=False):
+        st.caption(
+            "Optional external language model support for incident summaries."
+        )
+        cached_key = load_cached_gemini_key()
+        if cached_key and not st.session_state.get("gemini_api_key"):
+            st.session_state["gemini_api_key"] = cached_key
+        st.checkbox(
+            "Use enhanced explanations",
+            value=False,
+            key="use_gemini_explanation",
+            help="Uses the configured external language model. The app falls back to the built-in explanation if unavailable.",
+        )
+        entered_key = st.text_input(
+            "Explanation API key",
+            value=st.session_state.get("gemini_api_key", ""),
+            key="gemini_api_key",
+            type="password",
+            help="Optional. You can also set this in the environment.",
+        )
+        if entered_key:
+            save_cached_gemini_key(entered_key)
+        st.text_input(
+            "Explanation model",
+            value=DEFAULT_GEMINI_MODEL,
+            key="gemini_model",
+        )
+
+
 def render_incident_selector(incidents):
+    split_options = ["All", *sorted(str(split) for split in incidents["data_split"].dropna().unique())]
+    selected_split = st.sidebar.selectbox(
+        "Data split",
+        options=split_options,
+        index=0,
+        key="incident_split_filter",
+    )
+    sort_by = st.sidebar.selectbox(
+        "Sort incidents by",
+        options=["Split, then ID", "ID", "Fault type", "Root-cause service"],
+        index=0,
+        key="incident_sort_by",
+    )
+
+    filtered = incidents.copy()
+    if selected_split != "All":
+        filtered = filtered.loc[filtered["data_split"].astype(str).eq(selected_split)].copy()
+
+    sort_columns = {
+        "Split, then ID": ["data_split", "incident_id"],
+        "ID": ["incident_id"],
+        "Fault type": ["fault_type", "incident_id"],
+        "Root-cause service": ["root_cause_service", "incident_id"],
+    }[sort_by]
+    filtered = filtered.sort_values(sort_columns).reset_index(drop=True)
+
     incident_label_map = {
-        row.incident_id: f"{row.incident_id} [{row.data_split}] - {row.title}"
-        for row in incidents.itertuples(index=False)
+        row.incident_id: (
+            f"{row.incident_id} | {row.data_split} | "
+            f"{display_label(row.fault_type)} / {display_label(row.root_cause_service)}"
+        )
+        for row in filtered.itertuples(index=False)
     }
     selected = st.sidebar.selectbox(
         "Select incident",
         options=list(incident_label_map.keys()),
         format_func=lambda incident_id: incident_label_map[incident_id],
     )
+    selected_row = filtered.loc[filtered["incident_id"].eq(selected)].iloc[0]
+    st.sidebar.caption(f"Title: {selected_row['title']}")
     return selected
 
 
@@ -142,10 +248,10 @@ def render_mode_selector():
     return st.sidebar.radio(
         "Choose data source",
         options=[
-            "Dataset incident",
-            "Upload real incident",
-            "Live ingest (HTTP)",
-            "Test set evaluation (batch)",
+            MODE_HISTORICAL,
+            MODE_UPLOAD,
+            MODE_LIVE,
+            MODE_EVALUATION,
         ],
         index=0,
     )
@@ -171,7 +277,7 @@ def parse_uploaded_metrics(uploaded_file) -> pd.DataFrame:
 
 
 def render_upload_panel():
-    st.sidebar.subheader("Real Incident Upload")
+    st.sidebar.subheader("Telemetry Upload")
     st.sidebar.caption(
         "Upload a CSV with at least these columns: "
         "`minute`, `error_rate`, `latency_ms`, `cpu_pct`, `memory_pct`, `queue_depth`, `auth_error_rate`."
@@ -184,7 +290,7 @@ def render_upload_panel():
         mime="text/csv",
         use_container_width=True,
     )
-    title = st.sidebar.text_input("Incident title", value="Uploaded real incident")
+    title = st.sidebar.text_input("Incident title", value="Uploaded incident")
     description = st.sidebar.text_area(
         "Incident description",
         value="Paste a short summary of what the application is doing or failing to do.",
@@ -195,9 +301,9 @@ def render_upload_panel():
 
 def render_incident_overview(incident):
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("True fault type", incident["fault_type"])
-    col2.metric("Root-cause service", incident["root_cause_service"])
-    col3.metric("Labeled anomalous", "Yes" if incident["is_anomalous"] else "No")
+    col1.metric("Reference fault", display_label(incident["fault_type"]))
+    col2.metric("Reference service", display_label(incident["root_cause_service"]))
+    col3.metric("Reference anomaly", "Yes" if incident["is_anomalous"] else "No")
     col4.metric("Data split", incident.get("data_split", "Unknown"))
 
     st.subheader("Incident summary")
@@ -206,16 +312,15 @@ def render_incident_overview(incident):
 
 
 def render_live_ingest_panel():
-    st.sidebar.subheader("Live HTTP ingest")
+    st.sidebar.subheader("Live Telemetry")
     st.sidebar.caption(
-        "Polls a fault-lab control plane `/api/telemetry/window` JSON endpoint. "
-        f"Default matches Docker map `{DEFAULT_LIVE_CONTROL_PLANE_URL}`."
+        "Pulls a rolling metrics window from a compatible telemetry endpoint."
     )
     st.sidebar.text_input(
-        "Control plane base URL",
+        "Telemetry endpoint",
         value=DEFAULT_LIVE_CONTROL_PLANE_URL,
         key="live_base_url",
-        help="Example: http://localhost:8001 when fault_lab is running.",
+        help="Base URL for the telemetry provider.",
     )
     st.sidebar.number_input(
         "Window length (minutes)",
@@ -233,12 +338,12 @@ def render_live_ingest_panel():
     )
     st.sidebar.text_input(
         "Incident title",
-        value="Live fault-lab window",
+        value="Live telemetry window",
         key="live_incident_title",
     )
     st.sidebar.text_area(
         "Incident description",
-        value="Rolling telemetry window ingested over HTTP from the running fault lab.",
+        value="Rolling telemetry window ingested from the connected environment.",
         key="live_incident_desc",
         height=100,
     )
@@ -250,9 +355,7 @@ def render_live_ingest_panel():
         step=0.01,
         key="live_anomaly_min",
         help=(
-            "Models are trained on RCAEval, not fault-lab traffic—benign checkout can look "
-            "like a borderline outlier. Raise this to count light spikes as Normal; use 0 "
-            "for the raw IsolationForest decision only."
+            "Raise this threshold to reduce borderline anomaly alerts in noisier environments."
         ),
     )
     return refresh_mode
@@ -261,15 +364,15 @@ def render_live_ingest_panel():
 def render_custom_incident_overview(title: str, description: str):
     col1, col2, col3 = st.columns(3)
     col1.metric("Source", "Uploaded CSV")
-    col2.metric("Training labels", "Unavailable")
-    col3.metric("Generalization", "Unseen incident")
+    col2.metric("Reference labels", "Unavailable")
+    col3.metric("Incident type", "Unlabeled")
 
     st.subheader("Incident summary")
     st.write(f"**Title:** {title}")
     st.write(description)
     st.warning(
         "These predictions are being applied to unseen external telemetry. "
-        "They are useful as pattern hints, but they are not guaranteed to map cleanly to your real application's services or fault taxonomy."
+        "Use them as triage guidance and confirm against operational context before acting."
     )
 
 
@@ -280,34 +383,20 @@ def render_live_ingest_overview(
     *,
     meta: dict | None = None,
 ):
-    meta = meta or {}
-    expected = meta.get("expected") or {}
-    active_scenario = meta.get("active_scenario") or "unknown"
-
     col1, col2, col3 = st.columns(3)
-    col1.metric("Source", "Live HTTP window")
-    col2.metric("Active scenario", active_scenario)
+    col1.metric("Source", "Live telemetry")
+    col2.metric("Connection", "Active")
     col3.metric(
-        "Expected fault",
-        expected.get("fault_type", "unknown"),
+        "Window size",
+        "Rolling",
     )
-    st.caption(f"Control plane: `{control_plane_url}`")
+    st.caption(f"Telemetry source: `{control_plane_url}`")
 
     st.subheader("Incident summary")
     st.write(f"**Title:** {title}")
     st.write(description)
-    if expected:
-        st.caption(
-            f"Expected root-cause service (per scenario preset): `{expected.get('root_cause_service', 'unknown')}`"
-        )
     st.info(
-        "Telemetry is polled from the control plane API (not uploaded CSV). "
-        "Run `docker compose -f fault_lab/docker-compose.yml up` and generate traffic in the storefront."
-    )
-    st.caption(
-        "**Healthy scenario** means fault-lab is not injecting scripted faults—it does not guarantee "
-        "the ML pipeline will say “Normal,” because metrics still differ from RCAEval training data. "
-        "Use the sidebar **Min anomaly score** slider to separate borderline spikes from clear incidents."
+        "Telemetry is pulled from the connected metrics endpoint and scored as a rolling incident window."
     )
 
 
@@ -318,10 +407,10 @@ def render_metric_charts(metrics):
 
 
 def _run_live_ingest_triage():
-    """Wire up whatever the user typed in the sidebar and run triage on the live pull."""
+    """Fetch the configured live telemetry window and run triage."""
     base_url = st.session_state.get("live_base_url", DEFAULT_LIVE_CONTROL_PLANE_URL)
     limit = int(st.session_state.get("live_limit", 120))
-    title = st.session_state.get("live_incident_title", "Live fault-lab window")
+    title = st.session_state.get("live_incident_title", "Live telemetry window")
     description = st.session_state.get("live_incident_desc", "")
     metrics_df, err, meta = fetch_telemetry_window(base_url, limit=limit)
     if err:
@@ -338,8 +427,6 @@ def _run_live_ingest_triage():
         anomaly_flag_min_score=min_score,
         precomputed_scalars=meta.get("precomputed_scalars"),
     )
-    result["expected"] = meta.get("expected") or {}
-    result["active_scenario"] = meta.get("active_scenario")
     return result
 
 
@@ -348,13 +435,12 @@ def render_triage_output(result):
     raw = result.get("unusual_raw")
     if raw is not None and raw != result["unusual"]:
         st.caption(
-            "Isolation Forest flagged this window as an outlier, but the anomaly score is below "
-            f"your minimum ({result.get('anomaly_flag_min_score', 0):.2f}) — **showing Normal** for the demo."
+            "The window was borderline anomalous, but it did not clear the configured alert threshold."
         )
     col1, col2, col3 = st.columns(3)
     col1.metric("Anomaly flag", "Abnormal" if result["unusual"] else "Normal")
-    col2.metric("Fault prediction", result["predicted_fault_type"])
-    col3.metric("Root-cause prediction", result["predicted_root_cause_service"])
+    col2.metric("Fault prediction", display_label(result["predicted_fault_type"]))
+    col3.metric("Root-cause prediction", display_label(result["predicted_root_cause_service"]))
 
     expected = result.get("expected") or {}
     if expected:
@@ -370,15 +456,15 @@ def render_triage_output(result):
         else:
             anomaly_match = True  # N/A for live-ingest scenario-only labels
         msg_parts = [
-            f"Labeled fault: `{expected_fault}` → predicted `{result['predicted_fault_type']}` "
+            f"Reference fault: `{display_label(expected_fault)}` -> predicted `{display_label(result['predicted_fault_type'])}` "
             f"({'match' if fault_match else 'mismatch'})",
-            f"Labeled service: `{expected_service}` → predicted `{result['predicted_root_cause_service']}` "
+            f"Reference service: `{display_label(expected_service)}` -> predicted `{display_label(result['predicted_root_cause_service'])}` "
             f"({'match' if service_match else 'mismatch'})",
         ]
         if has_truth_anomaly:
             msg_parts.insert(
                 0,
-                f"Labeled anomaly: `{'Abnormal' if truth_anom else 'Normal'}` → "
+                f"Reference anomaly: `{'Abnormal' if truth_anom else 'Normal'}` -> "
                 f"predicted `{'Abnormal' if pred_anom else 'Normal'}` "
                 f"({'match' if anomaly_match else 'mismatch'})",
             )
@@ -391,47 +477,91 @@ def render_triage_output(result):
         else:
             st.error(msg)
 
-    classifier_config = get_active_classifier_config()
-    if classifier_config:
-        st.caption(
-            "Active classifiers: "
-            f"fault=`{classifier_config['fault_classifier_name']}`, "
-            f"root cause=`{classifier_config['root_cause_classifier_name']}`"
-        )
-
     st.write(
         f"**Anomaly score:** {result['anomaly_score']:.3f} | "
         f"**Fault confidence:** {result['fault_confidence']:.3f} | "
         f"**Root-cause confidence:** {result['root_cause_confidence']:.3f}"
     )
 
-    if result["top_similar_incidents"]:
-        st.subheader("Similar incidents")
+    signal_highlights = result.get("signal_highlights") or []
+    if signal_highlights:
+        st.subheader("Top signal changes")
+        signal_df = pd.DataFrame(signal_highlights).copy()
+        signal_df["metric"] = signal_df["metric"].map(display_metric_name)
+        signal_df = signal_df[
+            ["metric", "max", "mean", "delta", "spike", "slope", "score"]
+        ]
+        signal_df = signal_df.rename(
+            columns={
+                "metric": "Signal",
+                "max": "Max",
+                "mean": "Mean",
+                "delta": "Delta",
+                "spike": "Spike",
+                "slope": "Slope",
+                "score": "Impact",
+            }
+        )
+        st.dataframe(signal_df, use_container_width=True, hide_index=True)
+
+    healthy_none = is_healthy_none_result(result)
+    unmatched_anomaly = is_unmatched_anomaly_result(result)
+    if healthy_none:
+        st.info("No incident pattern detected. Reference cases and supporting context are hidden for healthy windows.")
+    elif unmatched_anomaly:
+        st.warning(
+            "Unusual telemetry detected, but no known fault pattern matched confidently. Review the signal changes before escalating."
+        )
+
+    if result["top_similar_incidents"] and not healthy_none:
+        st.subheader("Reference cases")
         for item in result["top_similar_incidents"]:
             st.write(
-                f"- `{item['incident_id']}` | score={item['similarity']:.3f} | "
-                f"fault={item['fault_type']} | root cause={item['root_cause_service']}"
+                f"- `{item['incident_id']}` | similarity={item['similarity']:.3f} | "
+                f"fault={display_label(item['fault_type'])} | service={display_label(item['root_cause_service'])}"
             )
 
     retrieved_context = result.get("retrieved_context", {})
-    if retrieved_context.get("documents"):
-        st.subheader("Retrieved context")
-        st.caption(retrieved_context["summary"])
-        with st.expander("Retrieval query", expanded=False):
-            st.code(retrieved_context["query"])
+    if retrieved_context.get("documents") and not healthy_none:
+        st.subheader("Supporting context")
+        st.caption(
+            "Showing supporting references for "
+            f"{display_label(result['predicted_fault_type'])} in "
+            f"{display_label(result['predicted_root_cause_service'])}."
+        )
         for item in retrieved_context["documents"]:
             st.write(
                 f"**{item['title']}** "
-                f"(`{item['source_type']}`, score={item['score']:.3f})"
+                f"(relevance={item['score']:.3f})"
             )
             st.write(item["content"])
 
+    st.subheader("Incident explanation")
+    use_gemini = bool(st.session_state.get("use_gemini_explanation", False))
+    if use_gemini:
+        with st.spinner("Generating enhanced explanation..."):
+            explanation = explain_triage_result(
+                result,
+                use_gemini=True,
+                model=st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL),
+                api_key=st.session_state.get("gemini_api_key") or None,
+            )
+        if explanation["ok"]:
+            pass
+        else:
+            st.warning(
+                "Enhanced explanation is currently unavailable. Showing the built-in incident explanation."
+            )
+    else:
+        explanation = explain_triage_result(result, use_gemini=False)
+        st.caption("Built-in incident explanation.")
+    st.write(explanation["text"])
+
 
 def render_test_set_evaluation():
-    st.subheader("Test split — batch evaluation")
+    st.subheader("Holdout evaluation")
     st.caption(
-        "Scores every **Test** row using the **saved** models in `models/` (same inference as Dataset incident, "
-        "RAG skipped for speed). Compares predictions to labels in `data/processed/incidents.csv`."
+        "Scores held-out incidents with the active model pipeline and compares predictions to reference labels."
     )
     st.slider(
         "Min anomaly score to count as Abnormal",
@@ -443,8 +573,8 @@ def render_test_set_evaluation():
         help="Aligned with triage: outlier must clear this score to be labeled Abnormal.",
     )
 
-    if st.button("Run evaluation on Test split", type="primary", key="batch_eval_btn"):
-        with st.spinner("Running deployed models on all Test incidents..."):
+    if st.button("Run holdout evaluation", type="primary", key="batch_eval_btn"):
+        with st.spinner("Running holdout evaluation..."):
             try:
                 min_s = float(st.session_state.get("batch_anomaly_min", 0.0))
                 df, metrics = evaluate_test_split(anomaly_flag_min_score=min_s)
@@ -456,18 +586,13 @@ def render_test_set_evaluation():
                 st.error(str(exc))
 
     if "batch_eval_metrics" not in st.session_state:
-        st.info("Click **Run evaluation on Test split** to compute metrics, charts, and per-incident results.")
-        if EVAL_SUMMARY_PATH.exists():
-            st.caption(
-                f"Optional: `{EVAL_SUMMARY_PATH.name}` from `python -m src.eval` compares **retrained** "
-                "classifier families on a holdout split — different from the deployed-model table below."
-            )
+        st.info("Click **Run holdout evaluation** to compute metrics, charts, and per-incident results.")
         return
 
     metrics = st.session_state["batch_eval_metrics"]
     df = st.session_state["batch_eval_df"]
 
-    st.markdown("##### Aggregate metrics (deployed models, Test split)")
+    st.markdown("##### Aggregate metrics")
     mcols = st.columns(4)
     mcols[0].metric("Test incidents", metrics["n_test"])
     mcols[1].metric("Fault accuracy", f"{metrics['fault_accuracy']:.3f}")
@@ -479,9 +604,6 @@ def render_test_set_evaluation():
     mcols2[1].metric("Root macro-F1", f"{metrics['root_cause_macro_f1']:.3f}")
     mcols2[2].metric("Anomaly precision", f"{metrics['anomaly_precision']:.3f}")
     mcols2[3].metric("Anomaly recall", f"{metrics['anomaly_recall']:.3f}")
-
-    with st.expander("Raw metric JSON", expanded=False):
-        st.json(metrics)
 
     st.markdown("##### Correct vs wrong (counts)")
     chart_df = pd.DataFrame(
@@ -550,7 +672,7 @@ def render_test_set_evaluation():
                 height=200,
             )
 
-    st.markdown("##### All Test incidents (full table)")
+    st.markdown("##### Incident-level results")
     st.dataframe(df, use_container_width=True, height=400)
     csv_bytes = df.to_csv(index=False).encode("utf-8")
     st.download_button(
@@ -565,12 +687,13 @@ def main():
     render_header()
     mode = render_mode_selector()
     render_training_panel()
+    render_explanation_panel()
 
     if not models_ready():
-        st.info("Baseline models are not trained yet. Use the **Training setup** expander in the sidebar.")
+        st.info("Models are not ready yet. Use **Model management** in the sidebar to refresh them.")
         return
 
-    if mode == "Dataset incident":
+    if mode == MODE_HISTORICAL:
         incidents = get_incidents()
         metrics = get_metrics()
         incident_id = render_incident_selector(incidents)
@@ -589,7 +712,7 @@ def main():
         render_triage_output(result)
         return
 
-    if mode == "Live ingest (HTTP)":
+    if mode == MODE_LIVE:
         refresh_mode = render_live_ingest_panel()
         interval_map = {"Manual (button)": 0, "Every 5s": 5, "Every 10s": 10, "Every 30s": 30}
         interval_sec = interval_map.get(refresh_mode, 0)
@@ -609,19 +732,16 @@ def main():
                 result = _run_live_ingest_triage()
                 if result is not None:
                     render_triage_output(result)
-            st.caption(
-                "Tip: start fault_lab (`docker compose -f fault_lab/docker-compose.yml up`), "
-                "then browse the storefront."
-            )
+            st.caption("Connect a compatible telemetry source, then fetch the latest window.")
         return
 
-    if mode == "Test set evaluation (batch)":
+    if mode == MODE_EVALUATION:
         render_test_set_evaluation()
         return
 
     title, description, uploaded_file = render_upload_panel()
     if uploaded_file is None:
-        st.info("Upload a metric CSV from a real application to run the trained models on unseen telemetry.")
+        st.info("Upload a metric CSV to score an incident window.")
         st.subheader("Expected CSV shape")
         st.dataframe(custom_metrics_template(), use_container_width=True)
         return

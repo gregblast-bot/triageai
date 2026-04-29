@@ -43,6 +43,7 @@ htmlcov/
 .coverage
 .coverage.*
 .cache
+.cache/triageai_gemini_key.json
 nosetests.xml
 coverage.xml
 *.cover

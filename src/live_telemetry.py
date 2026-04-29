@@ -41,20 +41,20 @@ def fetch_telemetry_window(
         with urlopen(req, timeout=timeout_sec) as resp:
             raw = resp.read().decode("utf-8")
     except HTTPError as exc:
-        return None, f"HTTP {exc.code} from control plane: {exc.reason}", {}
+        return None, f"Telemetry endpoint returned HTTP {exc.code}: {exc.reason}", {}
     except URLError as exc:
-        return None, f"Could not reach control plane ({url}): {exc.reason}", {}
+        return None, f"Could not reach telemetry endpoint: {exc.reason}", {}
     except OSError as exc:
         return None, f"Network error: {exc}", {}
 
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
-        return None, f"Invalid JSON from control plane: {exc}", {}
+        return None, f"Telemetry endpoint returned invalid JSON: {exc}", {}
 
     rows = payload.get("rows")
     if not isinstance(rows, list):
-        return None, "Control plane response missing 'rows' list.", {}
+        return None, "Telemetry endpoint response is missing the required rows list.", {}
 
     meta = {
         "active_scenario": payload.get("active_scenario"),
@@ -62,7 +62,7 @@ def fetch_telemetry_window(
     }
 
     if not rows:
-        return None, "No telemetry rows yet. Generate traffic in the fault lab, then refresh.", meta
+        return None, "No telemetry rows are available yet. Generate traffic, then refresh.", meta
 
     frame = pd.DataFrame(rows)
     required = ["minute", *METRIC_COLUMNS]

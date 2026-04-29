@@ -7,6 +7,7 @@ TriageAI is an incident-triage project focused on:
 - root-cause service prediction
 - similar-incident retrieval
 - local retrieval-only RAG for supporting context
+- optional Gemini free-tier LLM explanations
 
 The project includes:
 
@@ -14,6 +15,7 @@ The project includes:
 - feature extraction from incident metrics
 - train/test-aware model training and evaluation
 - a free local retrieval index built from incident cases and curated notes
+- a built-in explanation layer, with optional Gemini generation
 - a main Streamlit triage app
 - a live telemetry simulator app
 - a real fault-injected local microservice stack for external testing
@@ -24,6 +26,7 @@ The project includes:
 - fault-type classification: `RandomForestClassifier` with `class_weight="balanced_subsample"` (default pipeline)
 - root-cause prediction: `RandomForestClassifier` with `class_weight="balanced_subsample"` (default pipeline)
 - supporting context: local retrieval-only RAG
+- explanation assistant: built-in local summarizer by default; optional Gemini LLM
 
 Optional **hyperparameter search** (much slower): `RandomizedSearchCV` over a bounded random sample of settings for both classifiers. Off by default; enable via the Streamlit sidebar when training, or `python -m src.train_models --tune` from the CLI.
 
@@ -53,6 +56,7 @@ The main app can score:
     ├── eval.py
     ├── features.py
     ├── generate_sample_data.py
+    ├── llm_explanations.py
     ├── rag.py
     ├── simulator.py
     ├── train_models.py
@@ -105,6 +109,15 @@ Run the companion simulator app:
 streamlit run simulator_app.py
 ```
 
+Optional: use Gemini's free-tier API for LLM explanations:
+
+```bash
+export GEMINI_API_KEY="your-google-ai-studio-key"
+streamlit run app.py
+```
+
+Create the key in Google AI Studio, then enable **Explanation assistant → Use Gemini LLM** in the sidebar. You can either export `GEMINI_API_KEY` or paste the key into the sidebar password field. If the key is missing or the request fails, the app falls back to the built-in local explanation.
+
 Run the real fault-injected stack:
 
 ```bash
@@ -144,6 +157,6 @@ Current default evaluation results are written to `models/eval_summary.json`.
 - The current scaffold does not train remediation-action recommendations because the project scope was narrowed to tasks that public AIOps datasets can support more honestly.
 - The starter scaffold is pinned for Python 3.8+.
 - The current RAG layer is retrieval-only and fully local. It does not require any paid LLM API.
+- LLM wording is optional through Gemini. The graded ML pipeline and RAG retrieval still run without it.
 - `simulator_app.py` provides a small ecommerce-like app that generates TriageAI-compatible telemetry and can deliberately inject failure scenarios such as CPU exhaustion, memory leak, queue congestion, auth failure, dependency outage, and cascading failure.
 - `fault_lab/` contains a real local multi-service stack with deliberate fault injection and telemetry export. See `fault_lab/README.md` for service-level details.
-

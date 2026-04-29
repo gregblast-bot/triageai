@@ -271,10 +271,19 @@ def retrieve_context(
     selected = []
     source_limits = {"fault_note": 2, "service_note": 2, "incident_case": 2}
     source_counts = Counter()
+    allow_service_notes = predicted_service not in {"", "none", "unknown", "unlabeled"}
 
     for idx in ranked_indices:
         doc = documents[idx]
         if doc["source_type"] == "incident_case" and doc["incident_id"] == triage_result["incident_id"]:
+            continue
+        if doc["source_type"] == "service_note" and not allow_service_notes:
+            continue
+        if (
+            doc["source_type"] == "service_note"
+            and doc["root_cause_service"]
+            and doc["root_cause_service"] != predicted_service
+        ):
             continue
         if source_counts[doc["source_type"]] >= source_limits.get(doc["source_type"], top_k):
             continue
@@ -296,7 +305,7 @@ def retrieve_context(
             break
 
     summary = (
-        f"Retrieved {len(selected)} context items for predicted fault "
+        f"Showing {len(selected)} supporting references for predicted fault "
         f"`{triage_result['predicted_fault_type']}` in service "
         f"`{triage_result['predicted_root_cause_service']}`."
     )

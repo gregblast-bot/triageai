@@ -44,6 +44,7 @@ jobs:
               "src.eval",
               "src.triage",
               "src.rag",
+              "src.llm_explanations",
               "src.simulator",
               "src.live_telemetry",
               "src.test_set_eval",
@@ -97,6 +98,7 @@ jobs:
           from src.data import load_incidents, load_metrics
           from src.test_set_eval import evaluate_test_split
           from src.triage import triage_custom_metrics, triage_incident
+          from src.llm_explanations import explain_triage_result
 
           incidents = load_incidents()
           metrics = load_metrics()
@@ -107,6 +109,8 @@ jobs:
           assert result["predicted_fault_type"], "Missing fault prediction"
           assert result["top_similar_incidents"], "Missing similar incidents"
           assert result["retrieved_context"]["documents"], "Missing retrieved context"
+          explanation = explain_triage_result(result)
+          assert explanation["text"], "Missing local explanation"
           print("dataset prediction:", result["incident_id"], result["predicted_fault_type"])
 
           custom_metrics = metrics[metrics["incident_id"].eq(sample["incident_id"])][["minute", *METRIC_COLUMNS]]
