@@ -3,7 +3,12 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .config import METRIC_COLUMNS, TEXT_COLUMNS
+from .config import (
+    METRIC_COLUMNS,
+    OPTIONAL_METRIC_COLUMNS,
+    PRECOMPUTED_SCALAR_FEATURES,
+    TEXT_COLUMNS,
+)
 
 
 def _safe_slope(values: pd.Series) -> float:
@@ -41,13 +46,15 @@ def build_feature_row(
     root_cause_service: str = "unknown",
     is_anomalous: bool = False,
     data_split: str | None = None,
+    precomputed_scalars: dict[str, float] | None = None,
 ) -> dict:
     working_metrics = metrics.copy()
     if "minute" in working_metrics.columns:
         working_metrics = working_metrics.sort_values("minute")
     working_metrics = working_metrics.reset_index(drop=True)
 
-    for column in METRIC_COLUMNS:
+    all_metric_columns = list(METRIC_COLUMNS) + list(OPTIONAL_METRIC_COLUMNS)
+    for column in all_metric_columns:
         if column not in working_metrics.columns:
             working_metrics[column] = 0.0
         working_metrics[column] = pd.to_numeric(working_metrics[column], errors="coerce").fillna(0.0)
@@ -61,8 +68,18 @@ def build_feature_row(
     }
     if data_split is not None:
         row["data_split"] = data_split
-    for column in METRIC_COLUMNS:
+    for column in all_metric_columns:
         row.update(_summarize_metric(working_metrics[column], column))
+
+    # Latency spread is p90 minus p50. If the source didn't ship p50 this just
+    # collapses to zero, which is what we want.
+    row["latency_spread_ms_mean"] = row["latency_ms_mean"] - row["latency_p50_ms_mean"]
+    row["latency_spread_ms_max"] = row["latency_ms_max"] - row["latency_p50_ms_max"]
+
+    scalars = precomputed_scalars or {}
+    for column in PRECOMPUTED_SCALAR_FEATURES:
+        row[column] = float(scalars.get(column, 0.0))
+
     return row
 
 
@@ -77,6 +94,11 @@ def build_feature_frame(
 
     for incident_id, group in grouped:
         base = incident_lookup.loc[incident_id]
+        scalars = {
+            column: float(base[column])
+            for column in PRECOMPUTED_SCALAR_FEATURES
+            if column in base.index and pd.notna(base[column])
+        }
         feature_rows.append(
             build_feature_row(
                 group,
@@ -86,6 +108,7 @@ def build_feature_frame(
                 root_cause_service=base["root_cause_service"],
                 is_anomalous=bool(base["is_anomalous"]),
                 data_split=base["data_split"] if "data_split" in base.index else None,
+                precomputed_scalars=scalars or None,
             )
         )
 

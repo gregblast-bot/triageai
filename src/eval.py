@@ -6,14 +6,10 @@ from sklearn.ensemble import IsolationForest
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
 
-from .config import EVAL_SUMMARY_PATH, MODELS_DIR
+from .config import EVAL_SUMMARY_PATH, MODELS_DIR, get_contamination_rate
 from .data import load_incidents, load_metrics
 from .features import build_feature_frame, get_numeric_feature_columns
 from .train_models import build_classifier_pipeline
-
-
-def _get_contamination_rate(anomaly_rate: float) -> float:
-    return min(max(float(anomaly_rate), 0.05), 0.35)
 
 
 def _score_predictions(y_true, y_pred) -> dict:
@@ -70,12 +66,18 @@ def evaluate_models() -> dict:
             stratify=feature_frame["fault_type"],
         )
 
+    normal_train_df = train_df[~train_df["is_anomalous"].astype(bool)]
+    if len(normal_train_df) < 10:
+        normal_train_df = train_df
+        anomaly_contamination = get_contamination_rate(train_df["is_anomalous"].mean())
+    else:
+        anomaly_contamination = "auto"
     anomaly_model = IsolationForest(
         n_estimators=250,
-        contamination=_get_contamination_rate(train_df["is_anomalous"].mean()),
+        contamination=anomaly_contamination,
         random_state=42,
     )
-    anomaly_model.fit(train_df[numeric_columns])
+    anomaly_model.fit(normal_train_df[numeric_columns])
     anomaly_pred = anomaly_model.predict(test_df[numeric_columns])
     anomaly_pred = [pred == -1 for pred in anomaly_pred]
 

@@ -18,6 +18,9 @@ from fault_lab.common.config import (
     CATALOG_BASE_URL,
     CHECKOUT_BASE_URL,
     CONTROL_BASE_URL,
+    CONTROL_PUBLIC_URL,
+    FAULT_LAB_SERVICE_ALIAS,
+    SCENARIO_EXPECTATION,
 )
 
 
@@ -33,12 +36,21 @@ def redirect_with_message(path: str, message: str, level: str = "info") -> Redir
 
 
 def ensure_client_id(request: Request, response: Optional[object] = None) -> str:
-    client_id = request.cookies.get("client_id")
-    if client_id:
-        return client_id
-    client_id = f"client-{uuid.uuid4().hex[:10]}"
+    """Same visitor, same id for the whole request.
+
+    Prefer the cookie; if there isn't one yet, generate once and stash it on
+    request.state. That matters because we sometimes read the id early (cart)
+    and set the cookie late (response)—without the cache we'd accidentally
+    mint two ids on a first visit and the cart wouldn't match what we stored."""
+    cached = getattr(request.state, "client_id", None)
+    if cached:
+        client_id = cached
+    else:
+        client_id = request.cookies.get("client_id") or f"client-{uuid.uuid4().hex[:10]}"
+        request.state.client_id = client_id
     if response is not None and hasattr(response, "set_cookie"):
-        response.set_cookie("client_id", client_id, httponly=False)
+        if not request.cookies.get("client_id"):
+            response.set_cookie("client_id", client_id, httponly=False)
     return client_id
 
 
@@ -101,14 +113,22 @@ async def load_cart_context(request: Request, client_id: str) -> dict:
 async def load_admin_context(request: Request) -> dict:
     faults_status, faults_payload = await request_json("GET", f"{CONTROL_BASE_URL}/api/faults")
     telemetry_status, telemetry_payload = await request_json("GET", f"{CONTROL_BASE_URL}/api/telemetry/summary")
+    faults_ok = faults_status == 200
+    active_scenario = faults_payload.get("active_scenario", "healthy") if faults_ok else "healthy"
+    expected = faults_payload.get("expected") if faults_ok else None
+    if not expected:
+        expected = SCENARIO_EXPECTATION.get(active_scenario, {})
     return {
         "request": request,
-        "faults": faults_payload.get("faults", {}) if faults_status == 200 else {},
-        "scenarios": faults_payload.get("scenarios", []) if faults_status == 200 else [],
+        "faults": faults_payload.get("faults", {}) if faults_ok else {},
+        "scenarios": faults_payload.get("scenarios", []) if faults_ok else [],
+        "active_scenario": active_scenario,
+        "expected": expected,
         "summary": telemetry_payload if telemetry_status == 200 else {},
         "message": request.query_params.get("message"),
         "level": request.query_params.get("level", "info"),
-        "download_url": "http://localhost:8001/api/telemetry/window.csv?limit=120",
+        "download_url": f"{CONTROL_PUBLIC_URL}/api/telemetry/window.csv?limit=120",
+        "service_alias": FAULT_LAB_SERVICE_ALIAS,
     }
 
 

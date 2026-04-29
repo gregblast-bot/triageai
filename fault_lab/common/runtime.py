@@ -10,6 +10,12 @@ from .clients import request_json
 from .config import CONTROL_BASE_URL, FAULT_CACHE_TTL_SEC
 
 
+# Total logical cores on the host. Used to normalize `Process.cpu_percent`
+# (which can exceed 100 on multi-core) to host-wide %. Memoized because
+# `cpu_count` returns a stable value and reading it is cheap but not free.
+_CPU_COUNT = max(1, psutil.cpu_count(logical=True) or 1)
+
+
 @dataclass
 class RequestContext:
     start_time: float
@@ -27,6 +33,23 @@ class ServiceRuntime:
         self._fault_cache_time = 0.0
         self._process = psutil.Process()
         self._process.cpu_percent(None)
+        # Seed disk IO so we can emit deltas per request instead of cumulative
+        # counters. psutil can't always get io_counters for a user-space
+        # process (macOS, some container setups), so fall back to zero there.
+        self._last_io_bytes = self._read_io_bytes()
+
+    def _read_io_bytes(self) -> int:
+        try:
+            counters = self._process.io_counters()
+            return int(counters.read_bytes + counters.write_bytes)
+        except (psutil.AccessDenied, AttributeError, NotImplementedError, OSError):
+            return 0
+
+    def _open_socket_count(self) -> int:
+        try:
+            return len(self._process.net_connections(kind="inet"))
+        except (psutil.AccessDenied, NotImplementedError, OSError):
+            return 0
 
     def begin_request(self) -> RequestContext:
         start = time.perf_counter()
@@ -77,8 +100,18 @@ class ServiceRuntime:
         extra_cpu: float = 0.0,
     ) -> None:
         latency_ms = (time.perf_counter() - context.start_time) * 1000.0
-        cpu_pct = max(0.0, self._process.cpu_percent(None) / 7.0 + extra_cpu)
+        raw_cpu = self._process.cpu_percent(None)
+        cpu_pct = max(0.0, raw_cpu / _CPU_COUNT + extra_cpu)
         memory_mb = self._process.memory_info().rss / (1024 * 1024)
+
+        # Delta since the last emission. It's process-wide, not request-scoped
+        # (psutil can't tell us that), but it still surfaces IO pressure nicely
+        # once we bucket a batch of events together.
+        current_io = self._read_io_bytes()
+        io_delta = max(0, current_io - self._last_io_bytes)
+        self._last_io_bytes = current_io
+        socket_count = self._open_socket_count()
+
         payload = {
             "service": self.service_name,
             "path": path,
@@ -89,6 +122,8 @@ class ServiceRuntime:
             "queue_depth": max(context.queue_depth, self._queue_pressure),
             "error": status_code >= 400,
             "auth_error": auth_error,
+            "disk_io_bytes": io_delta,
+            "socket_count": socket_count,
         }
 
         try:
@@ -105,6 +140,15 @@ class ServiceRuntime:
 
 
 def busy_wait(seconds: float) -> None:
+    """Spin the CPU for a bit—crude but enough to show a cpu-style fault in the demo."""
     deadline = time.perf_counter() + max(0.0, seconds)
     while time.perf_counter() < deadline:
         pass
+
+
+async def async_busy_wait(seconds: float) -> None:
+    """Same idea as busy_wait, but in a thread pool so the event loop stays responsive."""
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, busy_wait, seconds)

@@ -9,7 +9,7 @@ jobs:
   python:
     name: Python pipeline
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
@@ -34,10 +34,9 @@ jobs:
         run: |
           python -m py_compile app.py simulator_app.py src/*.py fault_lab/common/*.py fault_lab/services/*.py fault_lab/frontend/app.py
           python - <<'PY'
-          import app
-          import simulator_app
-
           modules = [
+              "app",
+              "simulator_app",
               "src.config",
               "src.data",
               "src.features",
@@ -46,6 +45,8 @@ jobs:
               "src.triage",
               "src.rag",
               "src.simulator",
+              "src.live_telemetry",
+              "src.test_set_eval",
               "fault_lab.services.control_plane",
               "fault_lab.services.auth_service",
               "fault_lab.services.catalog_service",
@@ -61,8 +62,8 @@ jobs:
       - name: Validate processed dataset
         run: |
           python - <<'PY'
-          from src.data import load_incidents, load_metrics
           from src.config import METRIC_COLUMNS
+          from src.data import load_incidents, load_metrics
 
           incidents = load_incidents()
           metrics = load_metrics()
@@ -73,33 +74,35 @@ jobs:
               "is_anomalous",
               "data_split",
           }
-          missing = required_incident_columns - set(incidents.columns)
-          assert not missing, f"Missing incident columns: {missing}"
-          missing_metrics = {"incident_id", "minute", *METRIC_COLUMNS} - set(metrics.columns)
-          assert not missing_metrics, f"Missing metric columns: {missing_metrics}"
+          missing_incident_columns = required_incident_columns - set(incidents.columns)
+          assert not missing_incident_columns, f"Missing incident columns: {missing_incident_columns}"
+
+          missing_metric_columns = {"incident_id", "minute", *METRIC_COLUMNS} - set(metrics.columns)
+          assert not missing_metric_columns, f"Missing metric columns: {missing_metric_columns}"
           assert len(incidents) > 0, "No incidents loaded"
           assert len(metrics) > 0, "No metrics loaded"
           assert set(incidents["incident_id"]).issubset(set(metrics["incident_id"])), "Incident without metrics"
+
           print(f"incidents={len(incidents)} metrics={len(metrics)}")
           print(incidents["fault_type"].value_counts().sort_index().to_string())
           PY
 
-      - name: Train models and run evaluation
-        run: |
-          python -m src.train_models
-          python -m src.eval
+      - name: Run evaluation
+        run: python -m src.eval
 
-      - name: Smoke-test triage predictions
+      - name: Smoke-test deployed triage models
         run: |
           python - <<'PY'
           from src.config import METRIC_COLUMNS
           from src.data import load_incidents, load_metrics
+          from src.test_set_eval import evaluate_test_split
           from src.triage import triage_custom_metrics, triage_incident
 
           incidents = load_incidents()
           metrics = load_metrics()
           test_incidents = incidents[incidents["data_split"].eq("Test")]
           sample = test_incidents.iloc[0] if not test_incidents.empty else incidents.iloc[0]
+
           result = triage_incident(sample["incident_id"])
           assert result["predicted_fault_type"], "Missing fault prediction"
           assert result["top_similar_incidents"], "Missing similar incidents"
@@ -110,16 +113,20 @@ jobs:
           custom_result = triage_custom_metrics(
               custom_metrics,
               title="CI uploaded telemetry smoke test",
-              description="Generated from a held-out processed incident window.",
+              description="Generated from a processed incident window.",
           )
           assert custom_result["predicted_fault_type"], "Missing custom prediction"
           print("custom prediction:", custom_result["predicted_fault_type"])
+
+          _, deployed_metrics = evaluate_test_split()
+          assert deployed_metrics["n_test"] > 0, "No deployed-model Test rows evaluated"
+          print("deployed fault accuracy:", deployed_metrics["fault_accuracy"])
           PY
 
   fault-lab:
     name: Fault Lab Docker
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Check out repository
@@ -127,25 +134,11 @@ jobs:
 
       - name: Validate Compose file
         run: |
-          compose() {
-            if docker compose version >/dev/null 2>&1; then
-              docker compose "$@"
-            else
-              docker-compose "$@"
-            fi
-          }
-          compose -f fault_lab/docker-compose.yml config
+          docker compose -f fault_lab/docker-compose.yml config
 
       - name: Build and start Fault Lab
         run: |
-          compose() {
-            if docker compose version >/dev/null 2>&1; then
-              docker compose "$@"
-            else
-              docker-compose "$@"
-            fi
-          }
-          compose -f fault_lab/docker-compose.yml up -d --build
+          docker compose -f fault_lab/docker-compose.yml up -d --build
 
       - name: Smoke-test Fault Lab endpoints
         run: |
@@ -165,24 +158,8 @@ jobs:
 
       - name: Show container logs on failure
         if: failure()
-        run: |
-          compose() {
-            if docker compose version >/dev/null 2>&1; then
-              docker compose "$@"
-            else
-              docker-compose "$@"
-            fi
-          }
-          compose -f fault_lab/docker-compose.yml logs --no-color
+        run: docker compose -f fault_lab/docker-compose.yml logs --no-color
 
       - name: Stop Fault Lab
         if: always()
-        run: |
-          compose() {
-            if docker compose version >/dev/null 2>&1; then
-              docker compose "$@"
-            else
-              docker-compose "$@"
-            fi
-          }
-          compose -f fault_lab/docker-compose.yml down -v
+        run: docker compose -f fault_lab/docker-compose.yml down -v

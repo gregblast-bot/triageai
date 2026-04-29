@@ -21,9 +21,11 @@ The project includes:
 ## Current Model Setup
 
 - anomaly detection: `IsolationForest`
-- fault-type classification: `RandomForestClassifier` with `class_weight="balanced_subsample"`
-- root-cause prediction: `RandomForestClassifier` with `class_weight="balanced_subsample"`
+- fault-type classification: `RandomForestClassifier` with `class_weight="balanced_subsample"` (default pipeline)
+- root-cause prediction: `RandomForestClassifier` with `class_weight="balanced_subsample"` (default pipeline)
 - supporting context: local retrieval-only RAG
+
+Optional **hyperparameter search** (much slower): `RandomizedSearchCV` over a bounded random sample of settings for both classifiers. Off by default; enable via the Streamlit sidebar when training, or `python -m src.train_models --tune` from the CLI.
 
 The main app can score:
 
@@ -79,6 +81,12 @@ Generate processed data, train models, and build the retrieval index:
 ./.venv/bin/python -m src.train_models
 ```
 
+Optional: run randomized hyperparameter search (slower; many minutes on full data):
+
+```bash
+./.venv/bin/python -m src.train_models --tune
+```
+
 Run evaluation:
 
 ```bash
@@ -108,22 +116,6 @@ Then open:
 - Storefront: `http://localhost:8090`
 - Control plane: `http://localhost:8001`
 
-## GitHub Actions
-
-This repository includes a CI workflow at `.github/workflows/ci.yml`.
-It runs on push, pull request, and manual dispatch.
-
-The workflow:
-
-- installs the main TriageAI dependencies and Fault Lab dependencies
-- compiles and imports the Streamlit, ML, and FastAPI modules
-- validates the processed incident and metric dataset
-- trains the models and runs evaluation
-- smoke-tests dataset and uploaded-CSV triage paths
-- validates, builds, starts, and smoke-tests the Fault Lab Docker Compose stack
-
-GitHub Actions is for validation/build automation. It does not permanently host the Streamlit or Fault Lab apps. For a public live demo, deploy the app separately on a hosting service such as Streamlit Community Cloud, Render, Railway, or Hugging Face Spaces.
-
 ## Main App
 
 `app.py` supports two input modes:
@@ -138,7 +130,7 @@ GitHub Actions is for validation/build automation. It does not permanently host 
   - `queue_depth`
   - `auth_error_rate`
 
-The sidebar also lets you retrain with different classifier families for comparison, although the default selected model is the weighted Random Forest variant that performed best in evaluation.
+The sidebar also lets you retrain with different classifier families for comparison, although the default selected model is the weighted Random Forest variant that performed best in evaluation. Check **Randomized hyperparameter search (slower)** if you want `RandomizedSearchCV` tuning instead of the fast default fit.
 
 ## Evaluation
 
@@ -154,3 +146,4 @@ Current default evaluation results are written to `models/eval_summary.json`.
 - The current RAG layer is retrieval-only and fully local. It does not require any paid LLM API.
 - `simulator_app.py` provides a small ecommerce-like app that generates TriageAI-compatible telemetry and can deliberately inject failure scenarios such as CPU exhaustion, memory leak, queue congestion, auth failure, dependency outage, and cascading failure.
 - `fault_lab/` contains a real local multi-service stack with deliberate fault injection and telemetry export. See `fault_lab/README.md` for service-level details.
+

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
-from typing import Iterable
 
 import numpy as np
 import pandas as pd
@@ -135,6 +135,10 @@ def generate_sample_dataset(
         incident_id = f"INC-{index + 1:04d}"
         region = rng.choice(["us-east-1", "us-west-2", "eu-central-1"])
 
+        split_key = f"sample::{incident_id}::{profile.fault_type}"
+        bucket = int(hashlib.sha1(split_key.encode("utf-8")).hexdigest()[:8], 16) % 10
+        data_split = "Train" if bucket < 8 else "Test"
+
         incident_rows.append(
             {
                 "incident_id": incident_id,
@@ -144,6 +148,7 @@ def generate_sample_dataset(
                 "root_cause_service": profile.root_cause_service,
                 "region": region,
                 "is_anomalous": profile.anomalous,
+                "data_split": data_split,
             }
         )
         metric_rows.extend(

@@ -122,7 +122,7 @@ async def clear_cart(client_id: str) -> dict:
     status_code = 200
     try:
         with cart_lock:
-            CARTS[client_id] = {}
+            CARTS.pop(client_id, None)
         return {"ok": True}
     finally:
         await runtime.emit_telemetry(

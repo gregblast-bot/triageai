@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from fault_lab.common.clients import request_json
 from fault_lab.common.config import AUTH_BASE_URL, CART_BASE_URL, CATALOG_BASE_URL
-from fault_lab.common.runtime import ServiceRuntime, busy_wait
+from fault_lab.common.runtime import ServiceRuntime, async_busy_wait
 
 
 app = FastAPI(title="Checkout Service")
@@ -72,7 +72,7 @@ async def checkout(payload: CheckoutRequest) -> dict:
 
         if faults.get("cpu_exhaustion"):
             runtime.add_queue_pressure(2.0 + faults["cpu_exhaustion"] * 4.0)
-            busy_wait(0.08 + 0.25 * faults["cpu_exhaustion"])
+            await async_busy_wait(0.08 + 0.25 * faults["cpu_exhaustion"])
         if faults.get("cascading_failure"):
             runtime.add_queue_pressure(3.0 + faults["cascading_failure"] * 6.0)
             await asyncio.sleep(0.20 + 0.70 * faults["cascading_failure"])

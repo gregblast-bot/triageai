@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 from pathlib import Path
 
 import pandas as pd
 
+logger = logging.getLogger(__name__)
 
-FILE_MAP = {"RE1-OB": "data.csv", "RE1-SS": "simple_data.csv", "RE1-TT": "simple_data.csv"}
+
+FILE_MAP = {"RE1-OB": "data.csv", "RE1-SS": "simple_data.csv", "RE1-TT": "simple_data.csv",
+            "RE2-OB": "simple_metrics.csv", "RE2-SS": "simple_metrics.csv", "RE2-TT": "simple_metrics.csv"}
 WINDOW_SIZE = 120
 PRE_FAULT_CONTEXT = 30
 NORMAL_WINDOW_GAP = 60
@@ -51,6 +55,7 @@ def _select_window(frame: pd.DataFrame, start: int, size: int) -> pd.DataFrame:
 
 
 def _assign_data_split(*parts: str) -> str:
+    # Deterministic hash-based split (not cryptographic — sha1 is fine for bucketing).
     key = "::".join(parts)
     bucket = int(hashlib.sha1(key.encode("utf-8")).hexdigest()[:8], 16) % 10
     return "Train" if bucket < 8 else "Test"
@@ -59,16 +64,27 @@ def _assign_data_split(*parts: str) -> str:
 def _build_metric_rows(incident_id: str, frame: pd.DataFrame) -> list[dict]:
     cpu_cols = [column for column in frame.columns if column.endswith("_cpu")]
     mem_cols = [column for column in frame.columns if column.endswith("_mem")]
-    latency_cols = [column for column in frame.columns if "_latency-90" in column]
-    if not latency_cols:
-        latency_cols = [column for column in frame.columns if "_latency" in column]
+    latency_p90_cols = [column for column in frame.columns if "_latency-90" in column]
+    latency_p50_cols = [column for column in frame.columns if "_latency-50" in column]
+    latency_generic_cols = [
+        column
+        for column in frame.columns
+        if "_latency" in column and "_latency-" not in column
+    ]
     error_cols = [column for column in frame.columns if column.endswith("_error")]
     workload_cols = [column for column in frame.columns if column.endswith("_workload")]
+    load_cols = [column for column in frame.columns if column.endswith("_load")]
+    diskio_cols = [column for column in frame.columns if column.endswith("_diskio")]
+    socket_cols = [column for column in frame.columns if column.endswith("_socket")]
     auth_error_cols = [
         column
         for column in error_cols
         if "auth" in column or "user" in column or "verification" in column
     ]
+
+    # Prefer p90 for tail latency. Some collections don't ship percentile
+    # columns at all, so fall back to the plain _latency fields in that case.
+    latency_cols = latency_p90_cols or latency_generic_cols
 
     def mean_series(columns: list[str], scale: float = 1.0) -> pd.Series:
         if not columns:
@@ -86,9 +102,44 @@ def _build_metric_rows(incident_id: str, frame: pd.DataFrame) -> list[dict]:
             "error_rate": mean_series(error_cols),
             "queue_depth": mean_series(workload_cols),
             "auth_error_rate": mean_series(auth_error_cols),
+            # Extra families. Fault-lab emits these live too, so training and
+            # inference both see the same shape.
+            "latency_p50_ms": mean_series(latency_p50_cols, scale=1000.0),
+            "load_avg": mean_series(load_cols),
+            "disk_io": mean_series(diskio_cols),
+            "socket_count": mean_series(socket_cols),
         }
     )
     return metric_frame.to_dict(orient="records")
+
+
+def _compute_per_service_deltas(frame: pd.DataFrame) -> dict[str, float]:
+    """
+    Report how much one service stands out from the pack, for the signals
+    that actually matter for root cause. The gap between the hottest
+    service and the cross-service mean is usually the cleanest way to
+    separate "one service is misbehaving" from "everything is a bit noisy."
+    """
+
+    def top_service_delta(suffix: str, scale: float = 1.0) -> float:
+        columns = [c for c in frame.columns if c.endswith(suffix)]
+        if not columns:
+            return 0.0
+        numeric = frame[columns].apply(pd.to_numeric, errors="coerce")
+        service_means = numeric.mean(axis=0).fillna(0.0)
+        if service_means.empty:
+            return 0.0
+        peak = float(service_means.max())
+        overall = float(service_means.mean())
+        return (peak - overall) * scale
+
+    return {
+        "cpu_top_service_delta": top_service_delta("_cpu"),
+        "mem_top_service_delta": top_service_delta("_mem", scale=1 / (1024**3)),
+        "error_top_service_delta": top_service_delta("_error"),
+        "latency_top_service_delta": top_service_delta("_latency-90", scale=1000.0)
+        or top_service_delta("_latency", scale=1000.0),
+    }
 
 
 def _append_incident(
@@ -104,18 +155,18 @@ def _append_incident(
     data_split: str,
 ) -> int:
     incident_id = f"INC-{incident_counter:05d}"
-    all_incidents.append(
-        {
-            "incident_id": incident_id,
-            "title": f"Telemetry window from {system_name}",
-            "description": f"Processed multivariate RCAEval metrics segment from {system_name}.",
-            "fault_type": fault_type,
-            "root_cause_service": root_cause_service,
-            "region": "unknown",
-            "is_anomalous": is_anomalous,
-            "data_split": data_split,
-        }
-    )
+    incident_record = {
+        "incident_id": incident_id,
+        "title": f"Telemetry window from {system_name}",
+        "description": f"Processed multivariate RCAEval metrics segment from {system_name}.",
+        "fault_type": fault_type,
+        "root_cause_service": root_cause_service,
+        "region": "unknown",
+        "is_anomalous": is_anomalous,
+        "data_split": data_split,
+    }
+    incident_record.update(_compute_per_service_deltas(frame))
+    all_incidents.append(incident_record)
     all_metrics.extend(_build_metric_rows(incident_id, frame))
     return incident_counter + 1
 
@@ -140,8 +191,7 @@ def convert_data(root_path: str = "data/raw", output_dir: str = "data/processed"
             continue
 
         target_filename = FILE_MAP[top_folder.name]
-        print("*" * 50)
-        print(f"Processing Top-Level Folder: {top_folder.name}")
+        logger.info("Processing top-level folder: %s", top_folder.name)
 
         for fault_folder in sorted(top_folder.iterdir()):
             if not fault_folder.is_dir():
@@ -151,7 +201,7 @@ def convert_data(root_path: str = "data/raw", output_dir: str = "data/processed"
             if fault_type is None or service_name is None:
                 continue
 
-            print(f"Processing Folder: {fault_folder.name} -> service={service_name}, fault={fault_type}")
+            logger.info("Processing folder: %s -> service=%s, fault=%s", fault_folder.name, service_name, fault_type)
 
             for run_folder in sorted(fault_folder.iterdir()):
                 if not run_folder.is_dir():
@@ -201,7 +251,7 @@ def convert_data(root_path: str = "data/raw", output_dir: str = "data/processed"
 
     pd.DataFrame(all_incidents).to_csv(f"{output_dir}/incidents.csv", index=False)
     pd.DataFrame(all_metrics).to_csv(f"{output_dir}/metrics.csv", index=False)
-    print(f"\nFinished! Compiled {incident_counter - 1} incident windows.")
+    logger.info("Finished! Compiled %d incident windows.", incident_counter - 1)
 
 
 if __name__ == "__main__":

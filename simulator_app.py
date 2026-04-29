@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+
 import streamlit as st
 
-from src.config import METRIC_COLUMNS, MODEL_FILES
+from src.config import METRIC_COLUMNS
 from src.simulator import (
     PAGES,
     SCENARIO_DESCRIPTIONS,
@@ -18,7 +20,7 @@ from src.simulator import (
     simulate_background_traffic,
     warm_start_state,
 )
-from src.triage import triage_custom_metrics
+from src.triage import models_ready, triage_custom_metrics
 
 
 st.set_page_config(page_title="ShopSim", layout="wide")
@@ -36,10 +38,6 @@ def get_sim_state() -> dict:
         st.session_state["shop_sim_state"] = default_simulation_state()
         warm_start_state(st.session_state["shop_sim_state"])
     return st.session_state["shop_sim_state"]
-
-
-def models_ready() -> bool:
-    return all(path.exists() for path in MODEL_FILES.values())
 
 
 def render_sidebar(state: dict) -> str:
@@ -169,6 +167,25 @@ def render_telemetry(state: dict):
     st.dataframe(event_log_frame(state, limit=12), use_container_width=True, hide_index=True)
 
 
+@st.cache_data(show_spinner=False)
+def _cached_triage(payload_hash: str, csv_text: str, title: str, description: str) -> dict:
+    """Full triage on exported history; cached so tweaking the UI doesn't rerun inference.
+
+    Streamlit keys the cache off the arguments—payload_hash is a cheap hash of
+    the CSV so any telemetry change misses cache and we recompute."""
+    import io
+
+    import pandas as pd
+
+    metrics = pd.read_csv(io.StringIO(csv_text))
+    return triage_custom_metrics(
+        metrics,
+        title=title,
+        description=description,
+        incident_id="SHOPSIM-LIVE-001",
+    )
+
+
 def render_triage_preview(state: dict):
     st.subheader("TriageAI preview")
     if not models_ready():
@@ -176,13 +193,18 @@ def render_triage_preview(state: dict):
         return
 
     history = history_frame(state, limit=120)
-    result = triage_custom_metrics(
-        history,
+    if history.empty:
+        st.caption("Not enough telemetry yet. Interact with the storefront to produce samples.")
+        return
+    csv_text = history.to_csv(index=False)
+    payload_hash = hashlib.sha1(csv_text.encode("utf-8")).hexdigest()
+    result = _cached_triage(
+        payload_hash,
+        csv_text,
         title="ShopSim session",
         description=(
             f"Simulated ecommerce telemetry with scenario {state['scenario']} under {state['traffic_level']} traffic."
         ),
-        incident_id="SHOPSIM-LIVE-001",
     )
 
     col1, col2, col3 = st.columns(3)
