@@ -178,7 +178,7 @@ def render_explanation_panel():
         if cached_key and not st.session_state.get("gemini_api_key"):
             st.session_state["gemini_api_key"] = cached_key
         st.checkbox(
-            "Use enhanced explanations",
+            "Use Gemini LLM explanations",
             value=False,
             key="use_gemini_explanation",
             help="Uses the configured external language model. The app falls back to the built-in explanation if unavailable.",
@@ -192,6 +192,9 @@ def render_explanation_panel():
         )
         if entered_key:
             save_cached_gemini_key(entered_key)
+            st.caption("Gemini key loaded. Enable the Gemini checkbox above to use it.")
+        elif cached_key:
+            st.caption("Cached Gemini key found. Enable the Gemini checkbox above to use it.")
         st.text_input(
             "Explanation model",
             value=DEFAULT_GEMINI_MODEL,
@@ -364,8 +367,8 @@ def render_live_ingest_panel():
 def render_custom_incident_overview(title: str, description: str):
     col1, col2, col3 = st.columns(3)
     col1.metric("Source", "Uploaded CSV")
-    col2.metric("Reference labels", "Unavailable")
-    col3.metric("Incident type", "Unlabeled")
+    col2.metric("Reference labels", "Not provided")
+    col3.metric("Evaluation", "Prediction only")
 
     st.subheader("Incident summary")
     st.write(f"**Title:** {title}")
@@ -547,11 +550,13 @@ def render_triage_output(result):
                 api_key=st.session_state.get("gemini_api_key") or None,
             )
         if explanation["ok"]:
-            pass
+            st.caption(f"Enhanced explanation from Gemini ({explanation['model']}).")
         else:
             st.warning(
                 "Enhanced explanation is currently unavailable. Showing the built-in incident explanation."
             )
+            if explanation.get("error"):
+                st.caption(f"Gemini error: {explanation['error']}")
     else:
         explanation = explain_triage_result(result, use_gemini=False)
         st.caption("Built-in incident explanation.")

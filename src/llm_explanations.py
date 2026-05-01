@@ -203,7 +203,8 @@ def build_llm_prompt(result: dict) -> str:
     lines = [
         "You are explaining an incident-triage model output to an on-call engineer.",
         "Use only the model output, signal highlights, and retrieved context below.",
-        "Write a production-quality explanation for an operational triage UI. Aim for 5 compact sections.",
+        "Write a production-quality explanation for an operational triage UI.",
+        "Use 5 clear sections with enough detail for a live demo: 2 to 4 sentences per narrative section, plus concrete bullets for the final checks.",
         "Do not preface the answer with meta text such as 'Here is an explanation' or discuss the interface itself.",
         "Do not invent metrics, services, incidents, commands, or root causes.",
         "If evidence is weak or confidence is low, say that directly.",
@@ -246,11 +247,11 @@ def build_llm_prompt(result: dict) -> str:
         [
             "",
             "Write with these exact section labels:",
-            "1. Assessment - one paragraph explaining the likely incident.",
-            "2. Model confidence - fault confidence, root-cause confidence, and what that means.",
-            "3. Telemetry evidence - reference the top signal highlights and explain why they matter.",
-            "4. Supporting context - for clean healthy/none results, state that reference cases are intentionally not needed; for unmatched anomalies, state that signal changes are the primary evidence; otherwise explain how retrieved notes or similar incidents support the hypothesis.",
-            "5. First triage steps - 3 to 5 concrete checks an engineer should do first.",
+            "1. Assessment - 2 to 3 sentences explaining the likely incident and operational impact.",
+            "2. Model confidence - 2 to 3 sentences explaining fault confidence, root-cause confidence, and how cautious the engineer should be.",
+            "3. Telemetry evidence - 3 to 4 sentences referencing the top signal highlights and explaining why they matter.",
+            "4. Supporting context - 2 to 3 sentences; for clean healthy/none results, state that reference cases are intentionally not needed; for unmatched anomalies, state that signal changes are the primary evidence; otherwise explain how retrieved notes or similar incidents support the hypothesis.",
+            "5. First triage steps - 4 to 6 concrete bullet checks an engineer should do first.",
         ]
     )
     return "\n".join(lines)
@@ -266,6 +267,7 @@ def _extract_gemini_text(data: dict) -> str:
 
 def clean_explanation_text(text: str) -> str:
     cleaned = str(text).strip()
+    cleaned = re.sub(r"^(?:#{1,6}\s*)+\n+", "", cleaned).strip()
     cleaned = re.sub(
         r"^\s*(here'?s|here is)\s+(a|the)?\s*.*?explanation[:\-\s]*",
         "",
@@ -429,7 +431,7 @@ def generate_gemini_explanation(
         ],
         "generationConfig": {
             "temperature": 0.2,
-            "maxOutputTokens": 850,
+            "maxOutputTokens": 1400,
         },
     }
     body = json.dumps(payload).encode("utf-8")
